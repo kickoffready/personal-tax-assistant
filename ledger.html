@@ -149,6 +149,8 @@
     <input type="file" id="fileInput" accept=".json,application/json" hidden>
   </div>
 
+  <div id="recovery"></div>
+
   <nav class="tabs" id="tabs">
     <button data-v="lodgment" class="on">Lodgment</button>
     <button data-v="assets">Assets</button>
@@ -226,6 +228,8 @@ let activeYear = null;
 let activeView = "lodgment";
 let fileName = null;
 let dirty = false;
+let recoveredAt = null;   // timestamp of a restored draft, null if none
+let autosaveOK = true;    // false when the browser refuses to store
 
 /* ============================================================
    DATE / FINANCIAL YEAR HELPERS
@@ -582,8 +586,29 @@ function removeRow(coll, id){
 function render(){
   derive();
   if (!activeYear || !derived.years.includes(activeYear)) activeYear = derived.years[derived.years.length-1];
+  renderRecovery();
   renderTopbar(); renderLodgment(); renderAssets(); renderExpenses();
   renderIncome(); renderYear(); renderData();
+}
+
+function renderRecovery(){
+  const el = $("#recovery");
+  if (recoveredAt) {
+    el.innerHTML = `<div class="note aside" style="margin-top:16px">
+      <b>Recovered draft — not yet in a file</b>
+      <p>This page reopened with work autosaved <strong>${ageText(recoveredAt)}</strong>${fileName?` against <code>${esc(fileName)}</code>`:""}.
+      It exists only in this browser. Save it to a ledger file, or discard it.</p>
+      <p style="margin-top:10px;display:flex;gap:8px">
+        <button class="primary" onclick="saveFile()">Save to ledger file</button>
+        <button class="danger" onclick="discardRecovery()">Discard draft</button>
+      </p></div>`;
+  } else if (!autosaveOK) {
+    el.innerHTML = `<div class="note warn" style="margin-top:16px">
+      <b>Crash recovery unavailable</b>
+      <p>This browser refused to store an autosave — private browsing, a full quota, or a
+      restricted <code>file://</code> origin. Nothing is being kept between reloads.
+      Save to a ledger file often; there is no net underneath you.</p></div>`;
+  } else el.innerHTML = "";
 }
 
 function renderTopbar(){
@@ -863,6 +888,9 @@ function renderData(){
       <dl class="kv" style="margin-top:14px">
         <dt>Loaded from</dt><dd>${esc(fileName || "—")}</dd>
         <dt>Status</dt><dd>${dirty ? "unsaved changes" : (fileName ? "saved" : "empty")}</dd>
+        <dt>Crash recovery</dt><dd>${autosaveOK
+          ? (recoveredAt ? "restored from " + ageText(recoveredAt) : "armed — writes on every change")
+          : "UNAVAILABLE — this browser refuses to store"}</dd>
         <dt>Years</dt><dd>${derived.years.length}</dd>
         <dt>Assets · expenses · income</dt><dd>${M.assets.length} · ${M.expenses.length} · ${M.income.length}</dd>
       </dl>
@@ -966,7 +994,7 @@ function saveFile(){
   const blob = new Blob([JSON.stringify(M, null, 2)], { type:"application/json" });
   const name = fileName || ("ledger-" + (activeYear || "") + ".json");
   download(blob, name);
-  fileName = name; dirty = false;
+  fileName = name; dirty = false; recoveredAt = null;
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
@@ -984,7 +1012,7 @@ function loadFile(file){
       if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
       M = Object.assign(emptyModel(), parsed);
       ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
-      fileName = file.name; dirty = false; activeYear = null;
+      fileName = file.name; dirty = false; activeYear = null; recoveredAt = null;
       localStorage.removeItem(AUTOSAVE_KEY);
       render();
     } catch (err) {
@@ -1031,12 +1059,32 @@ function exportCSV(){
 }
 function resetAll(){
   if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; recoveredAt = null;
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
+function discardRecovery(){
+  if (!confirm("Discard the recovered draft?\n\nAnything entered since your last save is lost. Any ledger file on disk is untouched.")) return;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; recoveredAt = null;
+  localStorage.removeItem(AUTOSAVE_KEY);
+  render();
+}
+function ageText(ms){
+  const s = Math.max(0, Math.round((Date.now() - ms)/1000));
+  if (s < 90) return s + " seconds ago";
+  const m = Math.round(s/60); if (m < 90) return m + " minute" + (m===1?"":"s") + " ago";
+  const h = Math.round(m/60); if (h < 36) return h + " hour" + (h===1?"":"s") + " ago";
+  return Math.round(h/24) + " days ago";
+}
 function saveAuto(){
-  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ model:M, fileName, at:Date.now() })); } catch(e){}
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ model:M, fileName, at:Date.now() }));
+    autosaveOK = true;
+  } catch(e){
+    // Safari private browsing, a full quota, or a file:// origin that refuses storage.
+    // Never swallow this: a safety net that is not there must say so.
+    autosaveOK = false;
+  }
 }
 function loadAuto(){
   try {
@@ -1046,6 +1094,7 @@ function loadAuto(){
     if (!s || !s.model) return false;
     M = Object.assign(emptyModel(), s.model);
     fileName = s.fileName || null; dirty = true;
+    recoveredAt = s.at || null;
     return true;
   } catch(e){ return false; }
 }
