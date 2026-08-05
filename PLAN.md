@@ -1,11 +1,11 @@
 # Static ledger tool for the tax repo
 
-> **Status:** built. `ledger.html` implements this design; 40 engine tests pass.
+> **Status:** built. `personal/ledger.html` implements this design; 40 engine tests pass.
 > **Written:** 6 August 2026
 
 ## Context
 
-The repo currently holds three static documents: a FY2025–26 filing playbook (`personal/index.html`), an abstracted remediation runbook (`personal/runbook.html`), and a bookkeeping system design (`bookkeeping-runbook.html`), plus an SMSF brief (`super/index.html`). All describe a process. None of them *do* anything.
+The repo currently holds three static documents: a FY2025–26 filing playbook (`personal/index.html`), an abstracted remediation runbook (`personal/runbook.html`), and a bookkeeping system design (`personal/bookkeeping-runbook.html`), plus an SMSF brief (`super/index.html`). All describe a process. None of them *do* anything.
 
 The underlying problem is the shape of a long-running `.xlsx` with one wide sheet per financial year: **nothing persists across tabs except by retyping.** The errors that follow are structural rather than careless, and they recur in workbooks of this kind — assets over $300 expensed immediately because nothing carries depreciation forward; capital losses that never reach the lodged return because carry-forward is manual; currency columns mixing a rate and its reciprocal; capital-gains blocks cloned between year-tabs and never refreshed; a marginal-rate multiplier that omits the Medicare levy. Reorganising the same year-tab layout cannot fix any of them.
 
@@ -17,25 +17,25 @@ The correction is to the memory model. "Export so it can resume next year" impli
 
 So: **the exported file is the system of record, and the browser is a calculator over it.** Open → load ledger → work → save ledger. `localStorage` is demoted to crash-recovery autosave, labelled as such in the UI and never authoritative.
 
-Scope decisions: the tool runs **parallel to the spreadsheet for one income year** before taking over; **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file**, and `bookkeeping-runbook.html` remains the process guide.
+Scope decisions: the tool runs **parallel to the spreadsheet for one income year** before taking over; **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file**, and `personal/bookkeeping-runbook.html` remains the process guide.
 
 ## Architecture
 
-Single self-contained `ledger.html`. No build step, no dependencies, no network. Opens from `file://` or served from GitHub Pages.
+Single self-contained `personal/ledger.html`. No build step, no dependencies, no network. Opens from `file://` or served from GitHub Pages. Scoped to the individual return — the SMSF is a separate area with its own records and reporting.
 
 **Store inputs, derive outputs.** Persist only what a human typed. Everything computed — depreciation rows, `claimed` amounts, AUD conversions, pool balances, lodgment totals — is recalculated on load. A bug fix or schema change then corrects historical years automatically instead of leaving stale numbers behind. This is the single most important design rule in the build.
 
 ```
 ledger.json  (the record — lives in cloud storage alongside the workbook)
    ↓ load                              ↑ save
-        ledger.html  (stateless calculator)
+   personal/ledger.html  (stateless calculator)
    ↓ export
 ledger-FY2025-26-{assets,expenses,income,lodgment}.csv  (archive)
 ```
 
 ### Data model (`schema: 1`)
 
-Mirrors the schemas already documented in `bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
+Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
 
 | Collection | Persisted | Notes |
 |---|---|---|
@@ -131,8 +131,8 @@ Each stage leaves the file working and testable.
 
 ## Files
 
-- `ledger.html` — the tool, repo root, self-contained. No build step, no dependencies, no network.
-- `README.md` and root `index.html` — orientation; both state that ledger data and evidence never enter the repo.
+- `personal/ledger.html` — the tool, inside the individual-return area. Nothing publishable lives at the repo root.
+- `README.md` and root `index.html` — orientation only; the root index is a directory that links out.
 - `.gitignore` — carries `ledger*.json`, `*.csv` and `evidence/`.
 - `personal/bookkeeping-runbook.html` §02 is the normative schema the tool implements.
 
