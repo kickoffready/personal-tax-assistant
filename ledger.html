@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tax Ledger</title>
+<meta name="description" content="Static single-file ledger for an Australian individual tax return. The file you export is the record.">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  :root {
+    --paper:#f2f4f2; --surface:#fbfcfa; --surface-2:#e8ebe7; --surface-3:#dde2dd;
+    --ink:#111917; --muted:#5b6a65; --faint:#8a9691; --rule:#d4d9d2;
+    --accent:#0d5a52; --accent-soft:#dfeae6;
+    --warn:#8f3340; --warn-soft:#f5e5e6;
+    --note:#9c6414; --note-soft:#f4ecdd;
+    --ok:#2f7d4f;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper:#0c1110; --surface:#141a19; --surface-2:#1b2321; --surface-3:#222c29;
+      --ink:#e6ebe8; --muted:#8fa09b; --faint:#6d7b77; --rule:#242e2c;
+      --accent:#5ec7b4; --accent-soft:#122724; --warn:#dd8089; --warn-soft:#2b1a1c;
+      --note:#d59a4e; --note-soft:#292217; --ok:#5fbb84; }
+  }
+  :root[data-theme="dark"] { --paper:#0c1110; --surface:#141a19; --surface-2:#1b2321; --surface-3:#222c29;
+    --ink:#e6ebe8; --muted:#8fa09b; --faint:#6d7b77; --rule:#242e2c;
+    --accent:#5ec7b4; --accent-soft:#122724; --warn:#dd8089; --warn-soft:#2b1a1c;
+    --note:#d59a4e; --note-soft:#292217; --ok:#5fbb84; }
+  :root[data-theme="light"] { --paper:#f2f4f2; --surface:#fbfcfa; --surface-2:#e8ebe7; --surface-3:#dde2dd;
+    --ink:#111917; --muted:#5b6a65; --faint:#8a9691; --rule:#d4d9d2;
+    --accent:#0d5a52; --accent-soft:#dfeae6; --warn:#8f3340; --warn-soft:#f5e5e6;
+    --note:#9c6414; --note-soft:#f4ecdd; --ok:#2f7d4f; }
+
+  body { background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:0 18px 80px; }
+
+  /* ---- topbar ---- */
+  .topbar { position:sticky; top:0; z-index:30; background:var(--paper); border-bottom:1px solid var(--rule); padding:12px 0; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .brand { font-family:var(--serif); font-size:1.15rem; font-weight:600; }
+  .filestate { font-family:var(--mono); font-size:11.5px; color:var(--muted); display:flex; align-items:center; gap:7px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--faint); flex:none; }
+  .dot.dirty { background:var(--note); }
+  .dot.clean { background:var(--ok); }
+  .spacer { flex:1; }
+  .yearpick { font-family:var(--mono); font-size:12px; padding:5px 8px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); }
+
+  button { font-family:var(--sans); font-size:12.5px; padding:6px 11px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); cursor:pointer; }
+  button:hover { border-color:var(--muted); }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--paper); font-weight:600; }
+  button.primary:hover { opacity:.9; }
+  button.tiny { font-size:11px; padding:3px 7px; }
+  button.danger { color:var(--warn); border-color:var(--warn); }
+
+  /* ---- nav ---- */
+  nav.tabs { display:flex; gap:2px; flex-wrap:wrap; border-bottom:1px solid var(--rule); margin:18px 0 22px; }
+  nav.tabs button { border:none; border-bottom:2px solid transparent; border-radius:0; background:none; padding:9px 14px; color:var(--muted); font-size:13.5px; }
+  nav.tabs button.on { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+  nav.tabs .badge { display:inline-block; margin-left:6px; font-family:var(--mono); font-size:10px; background:var(--warn); color:var(--paper); border-radius:8px; padding:1px 6px; }
+
+  .view { display:none; }
+  .view.on { display:block; }
+
+  h2 { font-family:var(--serif); font-size:1.4rem; font-weight:600; margin-bottom:6px; }
+  h3 { font-size:.78rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--accent); margin:26px 0 10px; }
+  p.sub { color:var(--muted); font-size:14px; max-width:74ch; margin-bottom:16px; }
+
+  /* ---- tables ---- */
+  .tw { overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--surface); margin-bottom:10px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--rule); vertical-align:middle; }
+  thead th { font-size:10px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); font-weight:600; white-space:nowrap; }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:hover { background:var(--surface-2); }
+  td.n, th.n { text-align:right; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
+  td.mono { font-family:var(--mono); font-size:12px; }
+  tr.sub td { background:var(--surface-2); color:var(--muted); font-size:12.5px; }
+  tr.total td { background:var(--accent-soft); font-weight:600; }
+
+  input, select, textarea { font-family:var(--sans); font-size:13px; padding:4px 6px; border:1px solid transparent; border-radius:3px; background:transparent; color:var(--ink); width:100%; min-width:60px; }
+  input:hover, select:hover, textarea:hover { border-color:var(--rule); }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); background:var(--paper); }
+  input.n { text-align:right; font-family:var(--mono); font-size:12.5px; }
+  select { cursor:pointer; }
+  .formrow { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; padding:12px; background:var(--surface-2); border:1px solid var(--rule); border-radius:4px; margin-bottom:14px; }
+  .fld { display:flex; flex-direction:column; gap:3px; }
+  .fld label { font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .fld input, .fld select { border:1px solid var(--rule); background:var(--surface); min-width:110px; }
+
+  /* ---- panels & notes ---- */
+  .panel { border:1px solid var(--rule); border-radius:4px; background:var(--surface); padding:16px 18px; margin-bottom:14px; }
+  .note { border:1px solid var(--rule); border-left:3px solid var(--accent); background:var(--accent-soft); padding:13px 16px; border-radius:3px; margin-bottom:16px; font-size:14px; }
+  .note.warn { border-left-color:var(--warn); background:var(--warn-soft); }
+  .note.aside { border-left-color:var(--note); background:var(--note-soft); }
+  .note b { display:block; font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:6px; font-weight:600; }
+  .note.warn b { color:var(--warn); }
+  .note.aside b { color:var(--note); }
+
+  .chk { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--rule); font-size:13.5px; align-items:flex-start; }
+  .chk:last-child { border-bottom:none; }
+  .chk .sev { font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; padding:2px 6px; border-radius:2px; flex:none; margin-top:2px; }
+  .sev.high { color:var(--warn); background:var(--warn-soft); border:1px solid var(--warn); }
+  .sev.med { color:var(--note); background:var(--note-soft); border:1px solid var(--note); }
+  .chk .msg b { display:block; font-weight:600; }
+  .chk .msg span { color:var(--muted); font-size:13px; }
+
+  /* ---- lodgment ---- */
+  .lodge-row { border:1px solid var(--rule); border-radius:4px; background:var(--surface); margin-bottom:8px; overflow:hidden; }
+  .lodge-head { display:grid; grid-template-columns:52px 1fr auto auto; gap:12px; align-items:center; padding:11px 14px; cursor:pointer; }
+  .lodge-head:hover { background:var(--surface-2); }
+  .lodge-lbl { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); }
+  .lodge-name { font-size:14px; }
+  .lodge-amt { font-family:var(--mono); font-size:14.5px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .lodge-body { display:none; padding:0 14px 12px 66px; }
+  .lodge-row.open .lodge-body { display:block; }
+  .lodge-body ul { list-style:none; }
+  .lodge-body li { display:flex; justify-content:space-between; gap:14px; padding:4px 0; font-size:13px; color:var(--muted); border-bottom:1px dotted var(--rule); }
+  .lodge-body li:last-child { border-bottom:none; }
+  .lodge-body li span:last-child { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+  .empty { padding:26px; text-align:center; color:var(--faint); font-size:13.5px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; font-size:13.5px; }
+  .kv dt { color:var(--muted); }
+  .kv dd { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .pill { font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; padding:2px 6px; border-radius:2px; background:var(--surface-3); color:var(--muted); white-space:nowrap; }
+  .pill.sched { background:var(--accent-soft); color:var(--accent); }
+  .pill.pool { background:var(--note-soft); color:var(--note); }
+  .pill.imm { background:var(--surface-3); color:var(--muted); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2); padding:.1em .35em; border-radius:3px; }
+  footer { margin-top:44px; padding-top:18px; border-top:1px solid var(--rule); font-size:12.5px; color:var(--muted); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <span class="brand">Tax Ledger</span>
+    <span class="filestate"><span class="dot" id="dot"></span><span id="fstate">no file loaded</span></span>
+    <span class="spacer"></span>
+    <select class="yearpick" id="yearpick" aria-label="Income year"></select>
+    <button id="btnLoad">Open…</button>
+    <button class="primary" id="btnSave">Save ledger</button>
+    <input type="file" id="fileInput" accept=".json,application/json" hidden>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button data-v="lodgment" class="on">Lodgment</button>
+    <button data-v="assets">Assets</button>
+    <button data-v="expenses">Expenses</button>
+    <button data-v="income">Income</button>
+    <button data-v="year">Year</button>
+    <button data-v="data">Data<span class="badge" id="warnBadge" hidden>0</span></button>
+  </nav>
+
+  <section class="view on" id="v-lodgment"></section>
+  <section class="view" id="v-assets"></section>
+  <section class="view" id="v-expenses"></section>
+  <section class="view" id="v-income"></section>
+  <section class="view" id="v-year"></section>
+  <section class="view" id="v-data"></section>
+
+  <footer>
+    <p>The file you save is the record. Autosave in this browser is crash recovery only — it is not a backup, is not in iCloud, and is lost if you clear site data. Rates current to August 2026. General research only; not personal tax advice.</p>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+
+const DEDUCTION_LABELS = {
+  D1:"Work-related car expenses", D2:"Work-related travel expenses",
+  D3:"Work clothing, laundry and dry-cleaning", D4:"Work-related self-education",
+  D5:"Other work-related expenses", D6:"Low-value pool deduction",
+  D7:"Interest income deductions", D8:"Dividend deductions",
+  D9:"Gifts or donations", D10:"Cost of managing tax affairs",
+  D12:"Personal superannuation contributions", D15:"Other deductions"
+};
+const INCOME_LABELS = {
+  I10:"Gross interest", I11:"Dividends", I13:"Partnerships and trusts",
+  I18:"Capital gains", I20:"Foreign source income", I24:"Other income"
+};
+const EFFECTIVE_LIVES = [
+  [/laptop|macbook|notebook|tablet|ipad/i, 2],
+  [/phone|iphone|android|mobile/i, 3],
+  [/desktop|imac|workstation|tower|pc\b/i, 4],
+  [/monitor|display|screen/i, 4],
+  [/printer|scanner/i, 5],
+  [/desk|chair|bookshelf|cabinet/i, 10]
+];
+const LABEL_HINTS = [
+  [/union|association|institute|membership/i, "D5"],
+  [/telstra|optus|vodafone|internet|broadband|mobile|nbn/i, "D5"],
+  [/course|training|conference|seminar|textbook/i, "D4"],
+  [/donation|foundation|charity|appeal/i, "D9"],
+  [/accountant|tax agent|bookkeep/i, "D10"],
+  [/income protection/i, "D15"],
+  [/super|smsf/i, "D12"],
+  [/broker|margin loan|share loan/i, "D8"],
+  [/bank fee|account keeping|account-keeping/i, "D7"]
+];
+const WFH_FIXED_RATE = 0.70;
+const POOL_FIRST_YEAR = 0.1875, POOL_ONGOING = 0.375;
+const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
+const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
+
+/* ============================================================
+   STATE — only what a human typed is persisted
+   ============================================================ */
+
+function emptyModel() {
+  return { schema:1, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+}
+let M = emptyModel();
+let derived = null;
+let activeYear = null;
+let activeView = "lodgment";
+let fileName = null;
+let dirty = false;
+
+/* ============================================================
+   DATE / FINANCIAL YEAR HELPERS
+   ============================================================ */
+
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function d(s){ if(!s) return null; const x = new Date(s+"T00:00:00"); return isNaN(x) ? null : x; }
+function fyOf(dateStr){
+  const x = d(dateStr); if(!x) return null;
+  const y = x.getFullYear(), m = x.getMonth(); // 0-indexed; July = 6
+  const start = m >= 6 ? y : y - 1;
+  return start + "-" + String(start+1).slice(2);
+}
+function fyStart(fy){ return d(fy.slice(0,4) + "-07-01"); }
+function fyEnd(fy){ return d((parseInt(fy.slice(0,4),10)+1) + "-06-30"); }
+function fyNext(fy){ const s = parseInt(fy.slice(0,4),10)+1; return s + "-" + String(s+1).slice(2); }
+function fyLabel(fy){ return fy.slice(0,4) + "–" + fy.slice(5); }
+function daysBetween(a,b){ return Math.round((b-a)/86400000) + 1; }
+function daysHeldIn(fy, purchase, disposal){
+  const s = fyStart(fy), e = fyEnd(fy);
+  const p = d(purchase); if(!p || p > e) return 0;
+  const dd = disposal ? d(disposal) : null;
+  if (dd && dd < s) return 0;
+  const from = p > s ? p : s;
+  const to = (dd && dd < e) ? dd : e;
+  return Math.max(0, daysBetween(from, to));
+}
+function addYears(dateStr, n){
+  const x = d(dateStr); if(!x) return null;
+  x.setFullYear(x.getFullYear()+n);
+  return x.toISOString().slice(0,10);
+}
+
+/* ============================================================
+   SMALL UTILITIES
+   ============================================================ */
+
+const $ = s => document.querySelector(s);
+function num(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
+function money(n){
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return (n<0?"-":"") + "$" + Math.abs(n).toLocaleString("en-AU",{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function pct(n){ return (num(n)*100).toFixed(0) + "%"; }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function uid(p){ return p + "-" + Math.random().toString(36).slice(2,8); }
+function nextAssetId(){
+  const fy = activeYear || fyOf(todayISO()) || "2025-26";
+  const yr = parseInt(fy.slice(0,4),10)+1;
+  const n = M.assets.filter(a => (a.asset_id||"").startsWith("A-"+yr)).length + 1;
+  return "A-" + yr + "-" + String(n).padStart(3,"0");
+}
+function suggestLife(desc){
+  for (const [re,life] of EFFECTIVE_LIVES) if (re.test(desc||"")) return life;
+  return 3;
+}
+function suggestLabel(supplier, desc){
+  const hay = (supplier||"") + " " + (desc||"");
+  const prior = M.expenses.find(e => e.supplier && supplier &&
+    e.supplier.toLowerCase() === supplier.toLowerCase() && e.label);
+  if (prior) return prior.label;
+  for (const [re,lab] of LABEL_HINTS) if (re.test(hay)) return lab;
+  return "D5";
+}
+function treatmentFor(cost){
+  const c = num(cost);
+  if (c <= IMMEDIATE_THRESHOLD) return "immediate";
+  if (c < POOL_CEILING) return "pool";
+  return "schedule";
+}
+
+/* ============================================================
+   DERIVE — everything computed, nothing stored
+   ============================================================ */
+
+function allYears(){
+  const s = new Set(M.years.map(y => y.year));
+  M.expenses.forEach(e => { const f = fyOf(e.date); if(f) s.add(f); });
+  M.income.forEach(i => { const f = fyOf(i.date); if(f) s.add(f); });
+  M.assets.forEach(a => { const f = fyOf(a.purchase_date); if(f) s.add(f); });
+  if (!s.size) s.add(fyOf(todayISO()) || "2025-26");
+  return [...s].sort();
+}
+function yearRec(fy){
+  let y = M.years.find(x => x.year === fy);
+  if (!y) { y = { year:fy, wfh_method:"fixed", wfh_hours:0, marginal:0.32 }; M.years.push(y); }
+  return y;
+}
+
+function derive(){
+  const years = allYears();
+  const dep = [];       // depreciation rows
+  const pool = {};      // fy -> {opening, additions, deduction, closing}
+  const assetState = {};// asset_id -> running adjustable value
+
+  for (const fy of years) {
+    // ---- individually scheduled assets
+    for (const a of M.assets) {
+      if (a.treatment !== "schedule") continue;
+      const days = daysHeldIn(fy, a.purchase_date, a.disposal_date);
+      if (days <= 0) continue;
+      const life = num(a.effective_life) || suggestLife(a.description);
+      const cost = num(a.cost);
+      const opening = assetState[a.asset_id] === undefined ? cost : assetState[a.asset_id];
+      let decline;
+      if (a.method === "diminishing") decline = opening * (days/365) * (2/life);
+      else decline = cost * (days/365) * (1/life);
+      decline = Math.min(decline, opening);
+      const closing = opening - decline;
+      assetState[a.asset_id] = closing;
+      const wp = workPctFor(a, fy);
+      dep.push({ asset_id:a.asset_id, description:a.description, year:fy,
+        opening, days_held:days, decline, work_pct:wp,
+        deductible: decline * wp, closing, label:"D5" });
+    }
+
+    // ---- low-value pool
+    const prev = pool[prevFY(fy, years)];
+    const opening = prev ? prev.closing : 0;
+    let additions = 0, firstYearDeduction = 0;
+    for (const a of M.assets) {
+      if (a.treatment !== "pool") continue;
+      if (fyOf(a.purchase_date) !== fy) continue;
+      const taxableCost = num(a.cost) * workPctFor(a, fy);
+      additions += taxableCost;
+      firstYearDeduction += taxableCost * POOL_FIRST_YEAR;
+    }
+    const ongoingDeduction = opening * POOL_ONGOING;
+    const deduction = ongoingDeduction + firstYearDeduction;
+    pool[fy] = { opening, additions, deduction, closing: Math.max(0, opening + additions - deduction) };
+  }
+
+  // ---- retention: keep_until per asset
+  const keep = {};
+  for (const a of M.assets) {
+    const rows = dep.filter(r => r.asset_id === a.asset_id);
+    const lastClaim = rows.length ? fyEnd(rows[rows.length-1].year).toISOString().slice(0,10) : a.purchase_date;
+    const candidates = [addYears(lastClaim, 5)];
+    if (a.disposal_date) candidates.push(addYears(a.disposal_date, 5));
+    const yr = M.years.find(y => y.year === fyOf(a.purchase_date));
+    if (yr && yr.noa_date) candidates.push(addYears(yr.noa_date, 5));
+    keep[a.asset_id] = candidates.filter(Boolean).sort().pop();
+  }
+
+  derived = { years, dep, pool, keep };
+  derived.lodgment = {}; derived.cgt = {};
+  for (const fy of years) {
+    derived.cgt[fy] = computeCGT(fy);
+    derived.lodgment[fy] = buildLodgment(fy);
+  }
+  derived.warnings = runChecks();
+  return derived;
+}
+function prevFY(fy, years){ const i = years.indexOf(fy); return i > 0 ? years[i-1] : null; }
+function workPctFor(a, fy){
+  if (a.work_pct && typeof a.work_pct === "object") {
+    if (a.work_pct[fy] !== undefined) return num(a.work_pct[fy]);
+    const ks = Object.keys(a.work_pct).sort().filter(k => k <= fy);
+    if (ks.length) return num(a.work_pct[ks[ks.length-1]]);
+    return 1;
+  }
+  return a.work_pct === undefined ? 1 : num(a.work_pct);
+}
+
+/* ---- capital gains: losses first, discount last ---- */
+function computeCGT(fy){
+  const rows = M.income.filter(i => i.type === "disposal" && fyOf(i.date) === fy);
+  let discountable = 0, other = 0, losses = 0;
+  for (const r of rows) {
+    const gain = num(r.proceeds) - num(r.cost_base);
+    if (gain < 0) { losses += -gain; continue; }
+    const acq = d(r.acquired), dis = d(r.date);
+    const held12 = acq && dis && (dis - acq) > 365*86400000;
+    if (held12) discountable += gain; else other += gain;
+  }
+  // apply current-year losses against non-discountable first
+  let rem = losses;
+  const otherAfter = Math.max(0, other - rem); rem = Math.max(0, rem - other);
+  const discAfter = Math.max(0, discountable - rem); rem = Math.max(0, rem - discountable);
+  // then carried-forward losses
+  const y = M.years.find(x => x.year === fy);
+  let cf = y ? num(y.cf_capital_loss) : 0;
+  const otherAfter2 = Math.max(0, otherAfter - cf); cf = Math.max(0, cf - otherAfter);
+  const discAfter2 = Math.max(0, discAfter - cf); cf = Math.max(0, cf - discAfter);
+  const net = otherAfter2 + discAfter2 * 0.5;
+  return { discountable, other, losses, netGain: net, unusedLoss: rem + cf,
+           discountApplied: discAfter2 * 0.5 };
+}
+
+/* ---- lodgment totals per label ---- */
+function buildLodgment(fy){
+  const out = { deductions:{}, income:{} };
+  const add = (bucket, label, name, amount) => {
+    if (!bucket[label]) bucket[label] = { total:0, lines:[] };
+    bucket[label].total += amount;
+    bucket[label].lines.push({ name, amount });
+  };
+
+  // expenses
+  for (const e of M.expenses) {
+    if (fyOf(e.date) !== fy) continue;
+    const claimed = num(e.amount) * (e.work_pct === undefined ? 1 : num(e.work_pct));
+    add(out.deductions, e.label || "D5", e.description || e.supplier || "expense", claimed);
+  }
+  // working from home
+  const y = M.years.find(x => x.year === fy);
+  if (y && y.wfh_method === "fixed" && num(y.wfh_hours) > 0) {
+    add(out.deductions, "D5",
+      "working from home (fixed rate, " + num(y.wfh_hours).toLocaleString("en-AU") + " hrs)",
+      num(y.wfh_hours) * WFH_FIXED_RATE);
+  }
+  // immediate write-off assets
+  for (const a of M.assets) {
+    if (a.treatment !== "immediate") continue;
+    if (fyOf(a.purchase_date) !== fy) continue;
+    add(out.deductions, "D5", a.description + " (immediate, ≤$300)", num(a.cost) * workPctFor(a, fy));
+  }
+  // scheduled depreciation
+  const depRows = derived.dep.filter(r => r.year === fy);
+  if (depRows.length) {
+    add(out.deductions, "D5", "depreciation — " + depRows.length + " asset" + (depRows.length>1?"s":""),
+      depRows.reduce((s,r) => s + r.deductible, 0));
+  }
+  // low-value pool
+  const p = derived.pool[fy];
+  if (p && p.deduction > 0) add(out.deductions, "D6", "pool deduction", p.deduction);
+
+  // income
+  for (const i of M.income) {
+    if (fyOf(i.date) !== fy) continue;
+    const holding = i.holding || i.type;
+    if (i.type === "interest") add(out.income, "I10", holding, num(i.gross_aud || i.amount));
+    else if (i.type === "dividend") {
+      add(out.income, "I11", holding + " (franked)", num(i.franked));
+      if (num(i.unfranked)) add(out.income, "I11", holding + " (unfranked)", num(i.unfranked));
+      if (num(i.credit)) add(out.income, "I11", holding + " (franking credit)", num(i.credit));
+    }
+    else if (i.type === "distribution") add(out.income, "I13", holding, num(i.gross_aud || i.amount));
+    else if (i.type === "foreign") add(out.income, "I20", holding + " (gross)", grossAud(i));
+    else if (i.type === "staking" || i.type === "airdrop") add(out.income, "I24", holding + " (" + i.type + ")", num(i.gross_aud || i.amount));
+  }
+  const cg = derived.cgt[fy];
+  if (cg && cg.netGain > 0) add(out.income, "I18", "net capital gain (after losses and discount)", cg.netGain);
+
+  return out;
+}
+function grossAud(i){
+  if (num(i.gross_aud)) return num(i.gross_aud);
+  const r = num(i.fx_rate);
+  return r ? num(i.gross_foreign) * r : num(i.gross_foreign);
+}
+
+/* ============================================================
+   INTEGRITY CHECKS — the review findings, as guardrails
+   ============================================================ */
+
+function runChecks(){
+  const w = [];
+  const push = (sev, title, detail) => w.push({ sev, title, detail });
+
+  for (const a of M.assets) {
+    if (a.treatment === "immediate" && num(a.cost) > IMMEDIATE_THRESHOLD)
+      push("high", a.asset_id + " expensed immediately at " + money(num(a.cost)),
+        "The $300 test applies to the item's cost, not the work-use share. Anything above it must be depreciated or pooled.");
+    if (a.treatment === "pool" && num(a.cost) >= POOL_CEILING)
+      push("high", a.asset_id + " pooled at " + money(num(a.cost)),
+        "Only assets costing under $1,000 are low-cost assets. This one needs an individual schedule.");
+    if (a.work_pct && typeof a.work_pct === "object" && Object.keys(a.work_pct).length > 1 && !a.basis)
+      push("med", a.asset_id + " work-use % changes between years with no basis recorded",
+        "A percentage that moves needs a note explaining why, kept at the time.");
+  }
+
+  // fixed rate double-dip
+  for (const y of M.years) {
+    if (y.wfh_method !== "fixed") continue;
+    const covered = M.expenses.filter(e => fyOf(e.date) === y.year &&
+      /electric|gas|energy|internet|broadband|phone|mobile|nbn|stationery|printer ink/i.test((e.description||"")+" "+(e.supplier||"")));
+    if (covered.length)
+      push("high", fyLabel(y.year) + ": " + covered.length + " expense" + (covered.length>1?"s":"") + " already covered by the 70c fixed rate",
+        "Energy, phone, internet and stationery are inside the rate and cannot be claimed separately on top.");
+  }
+
+  // non-qualifying WFH categories
+  const bad = M.expenses.filter(e => /water|rates|council/i.test((e.description||"")+" "+(e.supplier||"")));
+  if (bad.length)
+    push("high", bad.length + " expense" + (bad.length>1?"s":"") + " outside the permitted running-expense categories",
+      "Only energy, phone/data/internet, stationery and consumables, cleaning of a dedicated office, and depreciation qualify. Water is not on the list.");
+
+  // mixed FX conventions
+  const rates = M.income.map(i => num(i.fx_rate)).filter(r => r > 0);
+  if (rates.some(r => r > 1) && rates.some(r => r < 1))
+    push("high", "Exchange rate column contains values on both sides of 1.0",
+      "Two reciprocal conventions are mixed. Any row using the wrong one is out by roughly the square of the rate.");
+
+  // duplicated income rows across years
+  const seen = {};
+  for (const i of M.income) {
+    const k = [i.type, i.holding, i.proceeds, i.gross_foreign, i.franked].join("|");
+    (seen[k] = seen[k] || []).push(fyOf(i.date));
+  }
+  const dup = Object.values(seen).filter(v => new Set(v.filter(Boolean)).size > 1);
+  if (dup.length)
+    push("high", dup.length + " income row" + (dup.length>1?"s":"") + " repeated across income years",
+      "Identical values in more than one year usually means a sheet was cloned forward. Confirm each disposal was declared once.");
+
+  for (const y of M.years) {
+    if (num(y.marginal) > 0 && [0.16,0.30,0.37,0.45].includes(Number(num(y.marginal).toFixed(2))))
+      push("med", fyLabel(y.year) + " marginal rate looks like it omits the Medicare levy",
+        "A deduction is worth the marginal rate plus 2%. Use 0.18, 0.32, 0.39 or 0.47.");
+    const cg = derived.cgt[y.year];
+    if (cg && cg.unusedLoss > 0 && !num(y.cf_capital_loss))
+      push("med", fyLabel(y.year) + " has an unused capital loss of " + money(cg.unusedLoss),
+        "Record it so it carries forward. A loss that never reaches the lodged return does not exist.");
+    if (y.noa_date) {
+      const deadline = addYears(y.noa_date, 2);
+      const days = Math.round((d(deadline) - new Date()) / 86400000);
+      if (days > 0 && days < 90)
+        push("high", fyLabel(y.year) + " amendment window closes in " + days + " days",
+          "Two years from the day after the notice of assessment issued — " + deadline + ".");
+    }
+  }
+  return w;
+}
+
+/* ============================================================
+   MUTATION
+   ============================================================ */
+
+function touch(){ dirty = true; saveAuto(); render(); }
+function setField(coll, id, field, value){
+  const row = M[coll].find(r => (r.id || r.asset_id) === id);
+  if (!row) return;
+  if (field === "cost") { row.cost = num(value); if (!row.treatment_locked) row.treatment = treatmentFor(row.cost); }
+  else if (field === "work_pct_year") {
+    row.work_pct = (typeof row.work_pct === "object" && row.work_pct) ? row.work_pct : {};
+    row.work_pct[activeYear] = num(value);
+  }
+  else if (["amount","effective_life","proceeds","cost_base","gross_foreign","fx_rate","tax_withheld_aud","franked","unfranked","credit","gross_aud","disposal_proceeds","work_pct"].includes(field))
+    row[field] = num(value);
+  else row[field] = value;
+  if (field === "treatment") row.treatment_locked = true;
+  touch();
+}
+function removeRow(coll, id){
+  if (!confirm("Delete this row? The record is only as good as what stays in it.")) return;
+  M[coll] = M[coll].filter(r => (r.id || r.asset_id) !== id);
+  touch();
+}
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+
+function render(){
+  derive();
+  if (!activeYear || !derived.years.includes(activeYear)) activeYear = derived.years[derived.years.length-1];
+  renderTopbar(); renderLodgment(); renderAssets(); renderExpenses();
+  renderIncome(); renderYear(); renderData();
+}
+
+function renderTopbar(){
+  const sel = $("#yearpick");
+  sel.innerHTML = derived.years.map(y => `<option value="${y}"${y===activeYear?" selected":""}>FY ${fyLabel(y)}</option>`).join("");
+  $("#dot").className = "dot " + (dirty ? "dirty" : (fileName ? "clean" : ""));
+  $("#fstate").textContent = fileName
+    ? fileName + (dirty ? " — unsaved changes" : " — saved")
+    : (dirty ? "unsaved — not yet written to a file" : "no file loaded");
+  const n = derived.warnings.length;
+  const b = $("#warnBadge"); b.hidden = n === 0; b.textContent = n;
+}
+
+function renderLodgment(){
+  const L = derived.lodgment[activeYear] || { deductions:{}, income:{} };
+  const y = M.years.find(x => x.year === activeYear) || {};
+  const dedKeys = Object.keys(DEDUCTION_LABELS).filter(k => L.deductions[k]);
+  const incKeys = Object.keys(INCOME_LABELS).filter(k => L.income[k]);
+  const totalDed = dedKeys.reduce((s,k) => s + L.deductions[k].total, 0);
+  const rate = num(y.marginal) || 0.32;
+
+  const rowHTML = (label, name, bucket) => `
+    <div class="lodge-row" onclick="this.classList.toggle('open')">
+      <div class="lodge-head">
+        <span class="lodge-lbl">${label.replace(/^I/,"")}</span>
+        <span class="lodge-name">${esc(name)}</span>
+        <span class="lodge-amt">${money(bucket.total)}</span>
+        <button class="tiny" onclick="event.stopPropagation();copyVal(${bucket.total.toFixed(2)})">copy</button>
+      </div>
+      <div class="lodge-body"><ul>
+        ${bucket.lines.map(l => `<li><span>${esc(l.name)}</span><span>${money(l.amount)}</span></li>`).join("")}
+      </ul></div>
+    </div>`;
+
+  $("#v-lodgment").innerHTML = `
+    <h2>Lodgment — FY ${fyLabel(activeYear)}</h2>
+    <p class="sub">One line per return label. The figure on the right is what you type into myTax; expand a row to see what makes it up.</p>
+
+    <h3>Deductions</h3>
+    ${dedKeys.length ? dedKeys.map(k => rowHTML(k, DEDUCTION_LABELS[k], L.deductions[k])).join("")
+      : '<div class="panel empty">No deductions for this year yet.</div>'}
+    ${dedKeys.length ? `<div class="panel" style="display:flex;justify-content:space-between;align-items:center">
+      <span><b>Total deductions</b> · worth about ${money(totalDed*rate)} at ${pct(rate)}</span>
+      <span class="lodge-amt">${money(totalDed)}</span></div>` : ""}
+
+    <h3>Income</h3>
+    ${incKeys.length ? incKeys.map(k => rowHTML(k, INCOME_LABELS[k], L.income[k])).join("")
+      : '<div class="panel empty">No investment income recorded for this year.</div>'}
+
+    ${renderCGTsummary()}
+    <div class="note aside"><b>Before you transcribe</b>
+      Check pre-fill is complete first — salary, bank interest and most dividends arrive automatically and should not be typed in from here. Use these totals for the labels pre-fill cannot populate.</div>`;
+}
+
+function renderCGTsummary(){
+  const c = derived.cgt[activeYear];
+  if (!c || (!c.discountable && !c.other && !c.losses)) return "";
+  return `<h3>Capital gains working</h3>
+    <div class="panel"><dl class="kv">
+      <dt>Gains eligible for the discount</dt><dd>${money(c.discountable)}</dd>
+      <dt>Gains held under 12 months</dt><dd>${money(c.other)}</dd>
+      <dt>Capital losses this year</dt><dd>${money(c.losses)}</dd>
+      <dt>Discount applied</dt><dd>${money(c.discountApplied)}</dd>
+      <dt><b>Net capital gain</b></dt><dd><b>${money(c.netGain)}</b></dd>
+      ${c.unusedLoss ? `<dt>Loss to carry forward</dt><dd>${money(c.unusedLoss)}</dd>` : ""}
+    </dl>
+    <p class="sub" style="margin:12px 0 0">Losses are applied before the discount, and against gains held under 12 months first — a dollar of loss offsets a full dollar of undiscounted gain, but effectively only 50c of a discounted one.</p></div>`;
+}
+
+function renderAssets(){
+  const rows = M.assets.slice().sort((a,b) => (a.purchase_date||"").localeCompare(b.purchase_date||""));
+  $("#v-assets").innerHTML = `
+    <h2>Assets</h2>
+    <p class="sub">One row per item, ever. Treatment is decided by cost, not by how much you use it for work. Rows are never deleted on disposal — set a disposal date instead, so the trail and the retention clock survive.</p>
+
+    <div class="formrow">
+      <div class="fld"><label>Description</label><input id="a-desc" placeholder="14&quot; laptop"></div>
+      <div class="fld"><label>Supplier</label><input id="a-sup"></div>
+      <div class="fld"><label>Purchase date</label><input id="a-date" type="date" value="${todayISO()}"></div>
+      <div class="fld"><label>Cost (incl)</label><input id="a-cost" class="n" type="number" step="0.01"></div>
+      <div class="fld"><label>Work use</label><input id="a-wp" class="n" type="number" step="0.05" value="1"></div>
+      <button class="primary" onclick="addAsset()">Add asset</button>
+    </div>
+
+    <div class="tw"><table>
+      <thead><tr>
+        <th>ID</th><th>Description</th><th>Purchased</th><th class="n">Cost</th>
+        <th>Treatment</th><th class="n">Life</th><th>Method</th><th class="n">Work %</th>
+        <th class="n">Opening</th><th class="n">Decline</th><th class="n">Claim</th><th class="n">Closing</th>
+        <th>Keep until</th><th></th>
+      </tr></thead>
+      <tbody>${rows.length ? rows.map(a => {
+        const dr = derived.dep.find(r => r.asset_id === a.asset_id && r.year === activeYear);
+        const imm = a.treatment === "immediate" && fyOf(a.purchase_date) === activeYear;
+        const pooled = a.treatment === "pool";
+        return `<tr>
+          <td class="mono">${esc(a.asset_id)}</td>
+          <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
+          <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
+          <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
+          <td><select onchange="setField('assets','${a.asset_id}','treatment',this.value)">
+            ${["immediate","pool","schedule"].map(t => `<option value="${t}"${a.treatment===t?" selected":""}>${t}</option>`).join("")}
+          </select></td>
+          <td class="n">${a.treatment==="schedule" ? `<input class="n" type="number" step="1" value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)">` : "—"}</td>
+          <td>${a.treatment==="schedule" ? `<select onchange="setField('assets','${a.asset_id}','method',this.value)">
+            <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>prime cost</option>
+            <option value="diminishing"${a.method==="diminishing"?" selected":""}>diminishing</option></select>` : "—"}</td>
+          <td class="n"><input class="n" type="number" step="0.05" value="${workPctFor(a,activeYear)}" onchange="setField('assets','${a.asset_id}','work_pct_year',this.value)"></td>
+          <td class="n">${dr ? money(dr.opening) : "—"}</td>
+          <td class="n">${dr ? money(dr.decline) : (pooled ? '<span class="pill pool">pooled</span>' : "—")}</td>
+          <td class="n">${dr ? money(dr.deductible) : (imm ? money(num(a.cost)*workPctFor(a,activeYear)) : "—")}</td>
+          <td class="n">${dr ? money(dr.closing) : "—"}</td>
+          <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
+          <td><button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">del</button></td>
+        </tr>`; }).join("")
+        : '<tr><td colspan="14" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
+      </tbody></table></div>
+
+    <div class="note"><b>Treatment is set by cost</b>
+      $300 or less → immediate deduction (D5) · $301–999 → low-value pool (D6) · $1,000 or more → individual schedule (D5).
+      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.</div>`;
+}
+
+function renderExpenses(){
+  const rows = M.expenses.filter(e => fyOf(e.date) === activeYear)
+    .sort((a,b) => (a.date||"").localeCompare(b.date||""));
+  $("#v-expenses").innerHTML = `
+    <h2>Expenses — FY ${fyLabel(activeYear)}</h2>
+    <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum.</p>
+
+    <div class="formrow">
+      <div class="fld"><label>Date</label><input id="e-date" type="date" value="${todayISO()}"></div>
+      <div class="fld"><label>Description</label><input id="e-desc"></div>
+      <div class="fld"><label>Supplier</label><input id="e-sup"></div>
+      <div class="fld"><label>Amount</label><input id="e-amt" class="n" type="number" step="0.01"></div>
+      <div class="fld"><label>Work use</label><input id="e-wp" class="n" type="number" step="0.05" value="1"></div>
+      <button class="primary" onclick="addExpense()">Add expense</button>
+    </div>
+
+    <div class="tw"><table>
+      <thead><tr><th>Date</th><th>Description</th><th>Supplier</th><th class="n">Amount</th>
+        <th class="n">Work %</th><th class="n">Claimed</th><th>Label</th><th>Basis</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(e => `<tr>
+        <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
+        <td><input value="${esc(e.description)}" onchange="setField('expenses','${e.id}','description',this.value)"></td>
+        <td><input value="${esc(e.supplier)}" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
+        <td class="n"><input class="n" type="number" step="0.01" value="${num(e.amount)}" onchange="setField('expenses','${e.id}','amount',this.value)"></td>
+        <td class="n"><input class="n" type="number" step="0.05" value="${e.work_pct===undefined?1:num(e.work_pct)}" onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
+        <td class="n">${money(num(e.amount) * (e.work_pct===undefined?1:num(e.work_pct)))}</td>
+        <td><select onchange="setField('expenses','${e.id}','label',this.value)">
+          ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
+        </select></td>
+        <td><input value="${esc(e.basis)}" placeholder="why, and how the % was reached" onchange="setField('expenses','${e.id}','basis',this.value)"></td>
+        <td><button class="tiny danger" onclick="removeRow('expenses','${e.id}')">del</button></td>
+      </tr>`).join("") : '<tr><td colspan="9" class="empty">No expenses recorded for this year.</td></tr>'}
+      </tbody></table></div>`;
+}
+
+function renderIncome(){
+  const rows = M.income.filter(i => fyOf(i.date) === activeYear)
+    .sort((a,b) => (a.date||"").localeCompare(b.date||""));
+  const types = ["dividend","distribution","interest","foreign","disposal","staking","airdrop"];
+  $("#v-income").innerHTML = `
+    <h2>Income — FY ${fyLabel(activeYear)}</h2>
+    <p class="sub">Foreign income is declared gross, before withholding, with the tax withheld claimed separately as an offset. Disposals need an acquisition date so the 12-month discount test can be applied.</p>
+
+    <div class="formrow">
+      <div class="fld"><label>Date</label><input id="i-date" type="date" value="${todayISO()}"></div>
+      <div class="fld"><label>Type</label><select id="i-type">${types.map(t=>`<option>${t}</option>`).join("")}</select></div>
+      <div class="fld"><label>Holding</label><input id="i-hold"></div>
+      <div class="fld"><label>Amount / proceeds</label><input id="i-amt" class="n" type="number" step="0.01"></div>
+      <button class="primary" onclick="addIncome()">Add row</button>
+    </div>
+
+    <div class="tw"><table>
+      <thead><tr><th>Date</th><th>Type</th><th>Holding</th>
+        <th class="n">Franked</th><th class="n">Unfranked</th><th class="n">Credit</th>
+        <th class="n">Gross fgn</th><th class="n">FX</th><th class="n">Withheld</th>
+        <th>Acquired</th><th class="n">Proceeds</th><th class="n">Cost base</th><th class="n">AUD</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(i => {
+        const f = (k,step) => `<input class="n" type="number" step="${step||"0.01"}" value="${num(i[k])||""}" onchange="setField('income','${i.id}','${k}',this.value)">`;
+        return `<tr>
+          <td><input type="date" value="${esc(i.date)}" onchange="setField('income','${i.id}','date',this.value)"></td>
+          <td><select onchange="setField('income','${i.id}','type',this.value)">${types.map(t=>`<option${i.type===t?" selected":""}>${t}</option>`).join("")}</select></td>
+          <td><input value="${esc(i.holding)}" onchange="setField('income','${i.id}','holding',this.value)"></td>
+          <td class="n">${i.type==="dividend"?f("franked"):"—"}</td>
+          <td class="n">${i.type==="dividend"?f("unfranked"):"—"}</td>
+          <td class="n">${i.type==="dividend"?f("credit"):"—"}</td>
+          <td class="n">${i.type==="foreign"?f("gross_foreign"):"—"}</td>
+          <td class="n">${i.type==="foreign"?f("fx_rate","0.0001"):"—"}</td>
+          <td class="n">${i.type==="foreign"?f("tax_withheld_aud"):"—"}</td>
+          <td>${i.type==="disposal"?`<input type="date" value="${esc(i.acquired)}" onchange="setField('income','${i.id}','acquired',this.value)">`:"—"}</td>
+          <td class="n">${i.type==="disposal"?f("proceeds"):"—"}</td>
+          <td class="n">${i.type==="disposal"?f("cost_base"):"—"}</td>
+          <td class="n">${["interest","distribution","staking","airdrop"].includes(i.type)?f("gross_aud"):(i.type==="foreign"?money(grossAud(i)):"—")}</td>
+          <td><button class="tiny danger" onclick="removeRow('income','${i.id}')">del</button></td>
+        </tr>`; }).join("") : '<tr><td colspan="14" class="empty">No investment income recorded for this year.</td></tr>'}
+      </tbody></table></div>
+
+    <div class="note"><b>One FX convention, always</b>
+      Pick AUD-per-USD or USD-per-AUD and use it for every row. Mixing the two puts a row out by roughly the square of the rate, which is large enough to matter and small enough to pass a glance. The Data tab warns if both appear.</div>`;
+}
+
+function renderYear(){
+  const y = yearRec(activeYear);
+  const L = derived.lodgment[activeYear] || { deductions:{} };
+  const totalDed = Object.values(L.deductions).reduce((s,b) => s + b.total, 0);
+  const deadline = y.noa_date ? addYears(y.noa_date, 2) : null;
+  const daysLeft = deadline ? Math.round((d(deadline) - new Date())/86400000) : null;
+  const set = (f,v) => `onchange="yearField('${f}',this.value)"`;
+
+  $("#v-year").innerHTML = `
+    <h2>Year — FY ${fyLabel(activeYear)}</h2>
+    <p class="sub">The reconciliation the spreadsheet never had. Recording what was actually assessed is the only way to find out whether the model is right.</p>
+
+    <h3>Working from home</h3>
+    <div class="panel">
+      <div class="formrow" style="margin:0;background:none;border:none;padding:0">
+        <div class="fld"><label>Method</label><select ${set("wfh_method")}>
+          <option value="fixed"${y.wfh_method!=="actual"?" selected":""}>fixed rate — 70c/hr</option>
+          <option value="actual"${y.wfh_method==="actual"?" selected":""}>actual cost</option>
+        </select></div>
+        ${y.wfh_method !== "actual" ? `<div class="fld"><label>Hours worked from home</label>
+          <input class="n" type="number" step="1" value="${num(y.wfh_hours)}" ${set("wfh_hours")}></div>
+          <div class="fld"><label>Deduction</label><input class="n" value="${money(num(y.wfh_hours)*WFH_FIXED_RATE)}" readonly></div>`
+        : `<div class="fld" style="flex:1"><label>Note</label><input value="Enter each running cost as an expense row, apportioned." readonly></div>`}
+      </div>
+      <p class="sub" style="margin:12px 0 0">${y.wfh_method !== "actual"
+        ? "Under the fixed rate there are no percentages — hours replace them, and energy, phone, internet and stationery are inside the rate. You need a record of actual hours across the whole year, kept as you went."
+        : "Actual cost accepts either full-year hours or a continuous 4-week diary representing your usual pattern. Energy must be calculated per appliance, not as a share of the bill."}</p>
+    </div>
+
+    <h3>Reconciliation</h3>
+    <div class="panel">
+      <div class="formrow" style="margin:0;background:none;border:none;padding:0">
+        <div class="fld"><label>Taxable income</label><input class="n" type="number" step="1" value="${num(y.taxable_income)||""}" ${set("taxable_income")}></div>
+        <div class="fld"><label>PAYG withheld</label><input class="n" type="number" step="1" value="${num(y.payg_withheld)||""}" ${set("payg_withheld")}></div>
+        <div class="fld"><label>Marginal + levy</label><input class="n" type="number" step="0.01" value="${num(y.marginal)||0.32}" ${set("marginal")}></div>
+        <div class="fld"><label>Assessed result</label><input class="n" type="number" step="0.01" value="${num(y.assessed)||""}" ${set("assessed")}></div>
+        <div class="fld"><label>NOA date</label><input type="date" value="${esc(y.noa_date)}" ${set("noa_date")}></div>
+        <div class="fld"><label>Loss carried in</label><input class="n" type="number" step="0.01" value="${num(y.cf_capital_loss)||""}" ${set("cf_capital_loss")}></div>
+      </div>
+      <dl class="kv" style="margin-top:16px">
+        <dt>Total deductions</dt><dd>${money(totalDed)}</dd>
+        <dt>Tax value at ${pct(num(y.marginal)||0.32)}</dt><dd>${money(totalDed * (num(y.marginal)||0.32))}</dd>
+        ${num(y.assessed) ? `<dt>Assessed</dt><dd>${money(num(y.assessed))}</dd>
+          <dt><b>Variance</b></dt><dd><b>${money(num(y.assessed) - totalDed*(num(y.marginal)||0.32))}</b></dd>` : ""}
+        ${deadline ? `<dt>Amendment window closes</dt><dd>${deadline}${daysLeft!==null?` (${daysLeft} days)`:""}</dd>` : ""}
+      </dl>
+      <p class="sub" style="margin:12px 0 0">Tax value of deductions is not a refund. A refund also depends on PAYG over-withholding, franking credits, capital gains and any study loan.</p>
+    </div>
+
+    <h3>Roll forward</h3>
+    <div class="panel">
+      <p class="sub">Creates FY ${fyLabel(fyNext(activeYear))}, carrying closing values, the pool balance and any unused capital loss. Assets stay where they are.</p>
+      <button class="primary" onclick="rollForward()">Start FY ${fyLabel(fyNext(activeYear))}</button>
+    </div>`;
+}
+
+function renderData(){
+  const w = derived.warnings;
+  $("#v-data").innerHTML = `
+    <h2>Data</h2>
+    <p class="sub">The file you save is the record. Everything else here is convenience.</p>
+
+    <div class="note warn"><b>The browser is not the record</b>
+      Autosave in this browser is crash recovery only. It is per-browser, wiped by clearing site data, behaves inconsistently when this page is opened from a file, and is in no backup. Save the ledger file, keep it beside the workbook, and freeze a dated copy at every lodgment.</div>
+
+    <h3>Ledger file</h3>
+    <div class="panel">
+      <div class="formrow" style="margin:0;background:none;border:none;padding:0">
+        <button onclick="$('#fileInput').click()">Open ledger.json…</button>
+        <button class="primary" onclick="saveFile()">Save ledger.json</button>
+        <button onclick="exportCSV()">Export CSV set</button>
+        <button class="danger" onclick="resetAll()">Clear everything</button>
+      </div>
+      <dl class="kv" style="margin-top:14px">
+        <dt>Loaded from</dt><dd>${esc(fileName || "—")}</dd>
+        <dt>Status</dt><dd>${dirty ? "unsaved changes" : (fileName ? "saved" : "empty")}</dd>
+        <dt>Years</dt><dd>${derived.years.length}</dd>
+        <dt>Assets · expenses · income</dt><dd>${M.assets.length} · ${M.expenses.length} · ${M.income.length}</dd>
+      </dl>
+    </div>
+
+    <h3>Integrity ${w.length ? `— ${w.length} to review` : ""}</h3>
+    <div class="panel">
+      ${w.length ? w.map(x => `<div class="chk">
+        <span class="sev ${x.sev}">${x.sev}</span>
+        <span class="msg"><b>${esc(x.title)}</b><span>${esc(x.detail)}</span></span></div>`).join("")
+      : '<div class="empty">Nothing flagged. Checks run on every change.</div>'}
+    </div>
+
+    <h3>Reconcile against the workbook</h3>
+    <div class="panel">
+      <p class="sub">While the spreadsheet is still authoritative, enter its total per label and confirm the difference is explained before trusting this tool for the next year.</p>
+      <div class="tw"><table>
+        <thead><tr><th>Label</th><th class="n">This ledger</th><th class="n">Workbook</th><th class="n">Difference</th></tr></thead>
+        <tbody>${Object.keys(DEDUCTION_LABELS).map(k => {
+          const mine = (derived.lodgment[activeYear]?.deductions[k]?.total) || 0;
+          const theirs = num((M.years.find(y=>y.year===activeYear)?.recon||{})[k]);
+          if (!mine && !theirs) return "";
+          const diff = mine - theirs;
+          return `<tr><td class="mono">${k}</td><td class="n">${money(mine)}</td>
+            <td class="n"><input class="n" type="number" step="0.01" value="${theirs||""}" onchange="reconField('${k}',this.value)"></td>
+            <td class="n" style="${Math.abs(diff)>0.005?"color:var(--warn)":""}">${theirs?money(diff):"—"}</td></tr>`;
+        }).join("") || '<tr><td colspan="4" class="empty">Nothing to compare yet.</td></tr>'}
+        </tbody></table></div>
+    </div>`;
+}
+
+/* ============================================================
+   ACTIONS
+   ============================================================ */
+
+function addAsset(){
+  const desc = $("#a-desc").value.trim();
+  const cost = num($("#a-cost").value);
+  if (!desc || !cost) { alert("A description and a cost are needed."); return; }
+  const date = $("#a-date").value || todayISO();
+  const a = { asset_id: nextAssetId(), description: desc, supplier: $("#a-sup").value.trim(),
+    purchase_date: date, cost, treatment: treatmentFor(cost),
+    effective_life: suggestLife(desc), method: "prime_cost",
+    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 1 }, status: "in_use", basis: "" };
+  M.assets.push(a);
+  ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
+  touch();
+}
+function addExpense(){
+  const desc = $("#e-desc").value.trim(), sup = $("#e-sup").value.trim();
+  const amt = num($("#e-amt").value);
+  if (!amt) { alert("An amount is needed."); return; }
+  M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
+    supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 1,
+    label: suggestLabel(sup, desc), basis: "" });
+  ["#e-desc","#e-sup","#e-amt"].forEach(s => $(s).value = "");
+  touch();
+}
+function addIncome(){
+  const type = $("#i-type").value, amt = num($("#i-amt").value);
+  const r = { id: uid("i"), date: $("#i-date").value || todayISO(), type,
+    holding: $("#i-hold").value.trim() };
+  if (type === "disposal") r.proceeds = amt;
+  else if (type === "foreign") r.gross_foreign = amt;
+  else if (type === "dividend") r.franked = amt;
+  else r.gross_aud = amt;
+  M.income.push(r);
+  ["#i-hold","#i-amt"].forEach(s => $(s).value = "");
+  touch();
+}
+function yearField(f, v){
+  const y = yearRec(activeYear);
+  y[f] = ["wfh_method","noa_date"].includes(f) ? v : num(v);
+  touch();
+}
+function reconField(label, v){
+  const y = yearRec(activeYear);
+  y.recon = y.recon || {};
+  y.recon[label] = num(v);
+  touch();
+}
+function rollForward(){
+  const next = fyNext(activeYear);
+  if (M.years.some(y => y.year === next)) { activeYear = next; render(); return; }
+  const cur = yearRec(activeYear);
+  const cg = derived.cgt[activeYear];
+  M.years.push({ year: next, wfh_method: cur.wfh_method, wfh_hours: 0,
+    marginal: cur.marginal, cf_capital_loss: cg ? cg.unusedLoss : 0 });
+  activeYear = next;
+  touch();
+}
+function copyVal(v){
+  navigator.clipboard?.writeText(String(v));
+}
+
+/* ============================================================
+   IO — the file is the record
+   ============================================================ */
+
+function saveFile(){
+  const blob = new Blob([JSON.stringify(M, null, 2)], { type:"application/json" });
+  const name = fileName || ("ledger-" + (activeYear || "") + ".json");
+  download(blob, name);
+  fileName = name; dirty = false;
+  localStorage.removeItem(AUTOSAVE_KEY);
+  render();
+}
+function download(blob, name){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function loadFile(file){
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const parsed = JSON.parse(r.result);
+      if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
+      M = Object.assign(emptyModel(), parsed);
+      ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
+      fileName = file.name; dirty = false; activeYear = null;
+      localStorage.removeItem(AUTOSAVE_KEY);
+      render();
+    } catch (err) {
+      alert("Could not read that file as a ledger.\n\n" + err.message + "\n\nNothing was changed.");
+    }
+  };
+  r.readAsText(file);
+}
+function csv(rows){
+  return rows.map(r => r.map(c => {
+    const s = c == null ? "" : String(c);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  }).join(",")).join("\n");
+}
+function exportCSV(){
+  const fy = activeYear;
+  const sets = {
+    assets: [["asset_id","description","supplier","purchase_date","cost","treatment","effective_life","method","work_pct","status","disposal_date","keep_until"],
+      ...M.assets.map(a => [a.asset_id,a.description,a.supplier,a.purchase_date,a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.status,a.disposal_date,derived.keep[a.asset_id]])],
+    depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
+      ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
+    expenses: [["date","description","supplier","amount","work_pct","claimed","label","basis"],
+      ...M.expenses.map(e => [e.date,e.description,e.supplier,e.amount,e.work_pct,(num(e.amount)*(e.work_pct===undefined?1:num(e.work_pct))).toFixed(2),e.label,e.basis])],
+    income: [["date","type","holding","franked","unfranked","credit","gross_foreign","fx_rate","tax_withheld_aud","acquired","proceeds","cost_base","gross_aud"],
+      ...M.income.map(i => [i.date,i.type,i.holding,i.franked,i.unfranked,i.credit,i.gross_foreign,i.fx_rate,i.tax_withheld_aud,i.acquired,i.proceeds,i.cost_base,i.gross_aud])],
+    lodgment: (() => {
+      const L = derived.lodgment[fy] || { deductions:{}, income:{} };
+      const rows = [["section","label","description","amount"]];
+      for (const [k,b] of Object.entries(L.deductions)) {
+        rows.push(["deduction",k,DEDUCTION_LABELS[k]+" — TOTAL",b.total.toFixed(2)]);
+        b.lines.forEach(l => rows.push(["deduction",k,l.name,l.amount.toFixed(2)]));
+      }
+      for (const [k,b] of Object.entries(L.income)) {
+        rows.push(["income",k.replace(/^I/,""),INCOME_LABELS[k]+" — TOTAL",b.total.toFixed(2)]);
+        b.lines.forEach(l => rows.push(["income",k.replace(/^I/,""),l.name,l.amount.toFixed(2)]));
+      }
+      return rows;
+    })()
+  };
+  Object.entries(sets).forEach(([name, rows], idx) => {
+    setTimeout(() => download(new Blob([csv(rows)], { type:"text/csv" }),
+      "ledger-" + fy + "-" + name + ".csv"), idx * 250);
+  });
+}
+function resetAll(){
+  if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null;
+  localStorage.removeItem(AUTOSAVE_KEY);
+  render();
+}
+function saveAuto(){
+  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ model:M, fileName, at:Date.now() })); } catch(e){}
+}
+function loadAuto(){
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return false;
+    const s = JSON.parse(raw);
+    if (!s || !s.model) return false;
+    M = Object.assign(emptyModel(), s.model);
+    fileName = s.fileName || null; dirty = true;
+    return true;
+  } catch(e){ return false; }
+}
+
+/* ============================================================
+   WIRING
+   ============================================================ */
+
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-v]"); if (!b) return;
+  activeView = b.dataset.v;
+  [...$("#tabs").children].forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + activeView));
+});
+$("#yearpick").addEventListener("change", e => { activeYear = e.target.value; render(); });
+$("#btnLoad").addEventListener("click", () => $("#fileInput").click());
+$("#btnSave").addEventListener("click", saveFile);
+$("#fileInput").addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+loadAuto();
+render();
+</script>
+</body>
+</html>
