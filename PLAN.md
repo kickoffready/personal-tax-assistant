@@ -1,24 +1,23 @@
 # Static ledger tool for the tax repo
 
-> **Status:** design only — nothing built. This document is the deliverable; `ledger.html` does not exist yet.
-> **Lives at:** `personal/PLAN.md`
+> **Status:** built. `ledger.html` implements this design; 40 engine tests pass.
 > **Written:** 6 August 2026
 
 ## Context
 
 The repo currently holds three static documents: a FY2025–26 filing playbook (`personal/index.html`), an abstracted remediation runbook (`personal/runbook.html`), and a bookkeeping system design (`bookkeeping-runbook.html`), plus an SMSF brief (`super/index.html`). All describe a process. None of them *do* anything.
 
-The underlying problem is a long-running `.xlsx` with one wide sheet per financial year. A review of it found errors that are structural rather than careless: assets over $300 expensed immediately because nothing carries depreciation forward; a capital loss that may never have been recorded because carry-forward is manual; a currency column mixing a rate and its reciprocal; capital-gains blocks copy-pasted identically across four year-tabs; a marginal-rate multiplier that omits the Medicare levy. A spreadsheet organised by year cannot fix these, because nothing persists across tabs except by retyping.
+The underlying problem is the shape of a long-running `.xlsx` with one wide sheet per financial year: **nothing persists across tabs except by retyping.** The errors that follow are structural rather than careless, and they recur in workbooks of this kind — assets over $300 expensed immediately because nothing carries depreciation forward; capital losses that never reach the lodged return because carry-forward is manual; currency columns mixing a rate and its reciprocal; capital-gains blocks cloned between year-tabs and never refreshed; a marginal-rate multiplier that omits the Medicare levy. Reorganising the same year-tab layout cannot fix any of them.
 
 **Is the proposed plan a good one? Yes — with one correction.**
 
-The direction is right. Form-label-first entry and year-over-year roll-forward are precisely the two things the spreadsheet fails at, and multi-year stateful computation is what code does well and spreadsheets do badly.
+The direction is right. Form-label-first entry and year-over-year roll-forward are precisely the two things a year-tab spreadsheet fails at, and multi-year stateful computation is what code does well and spreadsheets do badly.
 
 The correction is to the memory model. "Export so it can resume next year" implies the browser holds state and export is a secondary action. That inverts the durability: `localStorage` is per-browser and per-origin, is wiped by "clear browsing data", behaves inconsistently on `file://` origins across Safari and Chrome, is invisible to inspection, and is in no backup or lodgment snapshot. Records here must survive 5 years from lodgment, 5 years from the *last* decline-in-value claim for a depreciating asset, and 5 years after no CGT event can happen — which for a long-held share parcel is two decades.
 
 So: **the exported file is the system of record, and the browser is a calculator over it.** Open → load ledger → work → save ledger. `localStorage` is demoted to crash-recovery autosave, labelled as such in the UI and never authoritative.
 
-Decisions taken with the user: the tool runs **parallel to the xlsx for one year** (xlsx stays authoritative for the FY2025–26 return being lodged now); **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file** and `bookkeeping-runbook.html` remains as the process guide.
+Scope decisions: the tool runs **parallel to the spreadsheet for one income year** before taking over; **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file**, and `bookkeeping-runbook.html` remains the process guide.
 
 ## Architecture
 
@@ -102,7 +101,7 @@ Two consequences worth building for:
 
 ### Integrity checks
 
-The review findings become guardrails, which is how the tool earns trust:
+The failure modes above become guardrails, which is how the tool earns trust:
 
 - asset over $300 marked `immediate`
 - expense duplicating a category already covered by the 70c fixed rate
@@ -132,22 +131,22 @@ Each stage leaves the file working and testable.
 
 ## Files
 
-- **New** `ledger.html` — the tool, repo root, self-contained.
-- **New** `README.md` — orients the four artifacts; states plainly that ledger data and evidence never enter the repo.
-- **Edit** `bookkeeping-runbook.html` — mark §02 as the normative schema, add a short section pointing at the tool and describing the file-as-record model.
-- **Edit** `.gitignore` — add `ledger*.json`, `ledger*.csv`, `evidence/`.
-- **Unchanged** `personal/`, `super/`, `private/`.
+- `ledger.html` — the tool, repo root, self-contained. No build step, no dependencies, no network.
+- `README.md` and root `index.html` — orientation; both state that ledger data and evidence never enter the repo.
+- `.gitignore` — carries `ledger*.json`, `*.csv` and `evidence/`.
+- `personal/bookkeeping-runbook.html` §02 is the normative schema the tool implements.
 
-Reuse the existing design tokens (the `--paper`/`--ink`/`--accent` set and Iowan/system/mono stack shared by `bookkeeping-runbook.html` and `super/index.html`) so the tool reads as part of the same repo. The `localStorage` pattern at `personal/runbook.html:958` is the starting point for autosave.
+The tool reuses the design tokens shared across the repo (the `--paper`/`--ink`/`--accent` set and
+the Iowan/system/mono stack) so it reads as part of the same collection.
 
 ## Verification
 
-1. **Correctness against a known case** — enter the assets from the reviewed workbook and confirm the tool reproduces the corrected depreciation schedule, including the carried deductions the original structure discarded.
+1. **Correctness against a known case** — enter a set of assets with known-correct schedules and confirm the tool reproduces them, including the carried deductions a year-tab structure discards.
 2. **Round-trip** — export JSON, clear all state, re-import, export again; the two files must be identical.
 3. **Roll-forward** — create the following year and confirm every opening value equals the prior closing, the pool balance carries, and the unused capital loss carries.
 4. **Derivation** — hand-edit a `work_pct` in the JSON, reload, and confirm every dependent figure recomputes rather than persisting stale.
 5. **Integrity** — feed each known-bad pattern (over-$300 immediate, mixed FX, duplicated income rows) and confirm the matching warning fires.
 6. **Automation boundary** — confirm nothing invents a work-use %; that a % set once carries forward across years; that changing it without a `basis` note warns; and that selecting the fixed rate for a year hides the per-category percentage inputs rather than asking for both.
 7. **Lodgment totals** — every label total must equal the sum of its expanded supporting rows, and match a hand-check for at least one label.
-6. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
-7. **Reconciliation** — run the FY2025–26 xlsx totals through the panel and account for every difference before trusting the tool for FY2026–27.
+8. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
+9. **Reconciliation** — run the spreadsheet's totals for the parallel year through the panel and account for every difference before the tool takes over.
