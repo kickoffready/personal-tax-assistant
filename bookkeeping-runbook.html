@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bookkeeping System Runbook</title>
+<meta name="description" content="Upgrading a spreadsheet tax record from year-sheets to a persistent ledger that maps directly onto ATO return labels.">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  :root {
+    --paper:#f2f4f2; --surface:#fbfcfa; --surface-2:#e8ebe7; --surface-3:#dde2dd;
+    --ink:#111917; --muted:#5b6a65; --faint:#8a9691; --rule:#d4d9d2;
+    --accent:#0d5a52; --accent-soft:#dfeae6;
+    --warn:#8f3340; --warn-soft:#f5e5e6;
+    --note:#9c6414; --note-soft:#f4ecdd;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:#0c1110; --surface:#141a19; --surface-2:#1b2321; --surface-3:#222c29;
+      --ink:#e6ebe8; --muted:#8fa09b; --faint:#6d7b77; --rule:#242e2c;
+      --accent:#5ec7b4; --accent-soft:#122724;
+      --warn:#dd8089; --warn-soft:#2b1a1c;
+      --note:#d59a4e; --note-soft:#292217;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0c1110; --surface:#141a19; --surface-2:#1b2321; --surface-3:#222c29;
+    --ink:#e6ebe8; --muted:#8fa09b; --faint:#6d7b77; --rule:#242e2c;
+    --accent:#5ec7b4; --accent-soft:#122724;
+    --warn:#dd8089; --warn-soft:#2b1a1c;
+    --note:#d59a4e; --note-soft:#292217;
+  }
+  :root[data-theme="light"] {
+    --paper:#f2f4f2; --surface:#fbfcfa; --surface-2:#e8ebe7; --surface-3:#dde2dd;
+    --ink:#111917; --muted:#5b6a65; --faint:#8a9691; --rule:#d4d9d2;
+    --accent:#0d5a52; --accent-soft:#dfeae6;
+    --warn:#8f3340; --warn-soft:#f5e5e6;
+    --note:#9c6414; --note-soft:#f4ecdd;
+  }
+
+  body { background: var(--paper); color: var(--ink); font-family: var(--sans); font-size:16px; line-height:1.58; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 20px 90px; }
+
+  header.top { padding: 48px 0 24px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
+  .kicker { font-family: var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin-bottom:14px; }
+  header.top h1 { font-family: var(--serif); font-size: clamp(2rem,5vw,2.9rem); font-weight:600; letter-spacing:-.015em; line-height:1.1; margin-bottom:14px; }
+  header.top p.lede { color: var(--muted); max-width: 64ch; }
+  .meta { display:flex; flex-wrap:wrap; gap:8px 24px; margin-top:20px; font-family:var(--mono); font-size:11.5px; color:var(--faint); letter-spacing:.04em; }
+  .meta b { color: var(--muted); font-weight:500; }
+
+  section { margin-bottom: 52px; scroll-margin-top: 20px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; padding-bottom:10px; margin-bottom:20px; border-bottom:2px solid var(--ink); }
+  .sec-num { font-family:var(--mono); font-size:11.5px; color:var(--accent); letter-spacing:.08em; }
+  .sec-head h2 { font-family:var(--serif); font-size:1.55rem; font-weight:600; letter-spacing:-.01em; }
+
+  h3 { font-family: var(--sans); font-size:.82rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--accent); margin:30px 0 10px; }
+  h4 { font-family: var(--serif); font-size:1.1rem; font-weight:600; margin:22px 0 8px; }
+
+  p, ul, ol { max-width: 72ch; }
+  p + p { margin-top: 13px; }
+  main ul, main ol, .body ul, .body ol { list-style:none; margin:12px 0; display:grid; gap:7px; }
+  .body ul li, ul.d li { position:relative; padding-left:20px; }
+  .body ul li::before, ul.d li::before { content:""; position:absolute; left:3px; top:.62em; width:5px; height:5px; border-radius:50%; background:var(--accent); }
+  ol.s { counter-reset:s; display:grid; gap:9px; }
+  ol.s li { position:relative; padding-left:28px; }
+  ol.s li::before { counter-increment:s; content:counter(s); position:absolute; left:0; top:.05em; font-family:var(--mono); font-size:11px; color:var(--accent); border:1px solid var(--rule); border-radius:50%; width:19px; height:19px; display:grid; place-items:center; }
+
+  code { font-family:var(--mono); font-size:.87em; background:var(--surface-2); padding:.1em .35em; border-radius:3px; }
+  pre { font-family:var(--mono); font-size:12.5px; background:var(--surface-2); border:1px solid var(--rule); border-radius:3px; padding:13px 15px; overflow-x:auto; line-height:1.55; }
+
+  .table-wrap { overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--surface); margin:16px 0 8px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; font-variant-numeric:tabular-nums; }
+  caption { text-align:left; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); padding:12px 15px 0; }
+  th, td { text-align:left; padding:9px 15px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  thead th { font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); font-weight:600; white-space:nowrap; }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom:none; }
+  tbody th[scope="row"] { font-weight:600; color:var(--ink); background:var(--surface-2); white-space:nowrap; }
+  td.k { font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
+  td.lbl { font-family:var(--mono); font-size:12.5px; color:var(--accent); font-weight:600; white-space:nowrap; }
+  .figcap { font-size:12.5px; color:var(--muted); margin-top:6px; max-width:78ch; }
+
+  .note { border:1px solid var(--rule); border-left:3px solid var(--accent); background:var(--accent-soft); padding:15px 19px; border-radius:3px; margin:20px 0; max-width:none; }
+  .note.warn { border-left-color:var(--warn); background:var(--warn-soft); }
+  .note.aside { border-left-color:var(--note); background:var(--note-soft); }
+  .note-label { font-family:var(--mono); font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin-bottom:7px; }
+  .note.warn .note-label { color:var(--warn); }
+  .note.aside .note-label { color:var(--note); }
+  .note p, .note ul { max-width:none; font-size:14.8px; }
+
+  /* schema block */
+  .schema { border:1px solid var(--rule); border-radius:4px; background:var(--surface); margin:16px 0 22px; overflow:hidden; }
+  .schema-head { background:var(--surface-2); border-bottom:1px solid var(--rule); padding:12px 16px; display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .schema-name { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); }
+  .schema-role { font-size:13px; color:var(--muted); }
+  .schema .table-wrap { border:none; border-radius:0; margin:0; }
+
+  /* trace */
+  .trace { display:grid; gap:0; margin:18px 0; border-top:1px solid var(--rule); }
+  .trace-step { display:grid; grid-template-columns:1fr; gap:3px 18px; padding:13px 0; border-bottom:1px solid var(--rule); }
+  @media (min-width:640px) { .trace-step { grid-template-columns:130px 1fr; } }
+  .trace-when { font-family:var(--mono); font-size:12px; color:var(--accent); }
+  .trace-what b { display:block; font-weight:600; font-size:15px; margin-bottom:2px; }
+  .trace-what span { color:var(--muted); font-size:14.5px; }
+  .trace-what code { font-size:12.5px; }
+
+  footer { margin-top:60px; padding-top:22px; border-top:1px solid var(--rule); font-size:13px; color:var(--muted); }
+  footer p { max-width:none; }
+  footer p + p { margin-top:10px; }
+
+  a { color:var(--accent); text-underline-offset:2px; }
+  a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System design · Australian individual return</div>
+  <h1>Upgrading a spreadsheet tax record</h1>
+  <p class="lede">How to restructure a long-running deduction workbook so that assets stay traceable across the years they are depreciated, every line already knows which return label it feeds, and the record survives the retention period the ATO actually requires — which is longer than most people assume.</p>
+  <div class="meta">
+    <div>Rules current to <b>Aug 2026</b></div>
+    <div>Form labels <b>2026 individual return</b></div>
+    <div>Assumes <b>salary + investment income</b></div>
+  </div>
+</header>
+
+<main>
+
+<!-- 1 -->
+<section id="shape">
+  <div class="sec-head"><span class="sec-num">01</span><h2>The structural change</h2></div>
+
+  <p>A workbook that grows one wide sheet per financial year has a specific failure mode: <strong>nothing persists across sheets except by copy-paste</strong>. An asset bought in one year has no representation in the next. A capital loss carried forward exists only if someone remembers to retype it. Columns drift as categories are added, so formula ranges silently stop covering the rows beneath them.</p>
+
+  <p>The fix is to stop organising by year and start organising by <em>entity</em>. Five narrow sheets, each with a stable row identity, where the year becomes a column rather than a tab.</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>What replaces what</caption>
+      <thead><tr><th>Old shape</th><th>New shape</th><th>What it fixes</th></tr></thead>
+      <tbody>
+        <tr><td>One tab per year, cloned forward</td><td>Five persistent sheets, year as a column</td><td>Errors stop propagating by clone</td></tr>
+        <tr><td>Device bought → one row, one year</td><td>Device → one register row + one ledger row per year held</td><td>Depreciation carries itself</td></tr>
+        <tr><td>Category columns invented ad hoc</td><td>Every row carries a return label</td><td>Lodgment becomes a filter, not a re-derivation</td></tr>
+        <tr><td>Receipts loose in a folder</td><td>Evidence path on the row that claims it</td><td>A query can be answered in minutes</td></tr>
+        <tr><td>Estimate never checked</td><td>Reconciliation sheet against the assessment</td><td>You find out when the model is wrong</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <div class="note-label">Keep it as .xlsx</div>
+    <p>Not Numbers, not a proprietary app. An <code>.xlsx</code> is a zip of XML — it can be opened by anything, including a script, and will still be readable in twenty years. That matters, because for some records twenty years is inside the retention window (section 07).</p>
+  </div>
+</section>
+
+<!-- 2 -->
+<section id="sheets">
+  <div class="sec-head"><span class="sec-num">02</span><h2>The five sheets</h2></div>
+
+  <p>Column names below are suggestions, but the <em>keys</em> matter: <code>asset_id</code> is what makes a device traceable, and <code>label</code> is what makes lodgment mechanical.</p>
+
+  <div class="schema">
+    <div class="schema-head"><span class="schema-name">assets</span><span class="schema-role">One row per item, ever. Rows are never deleted — only marked disposed.</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Column</th><th>Example</th><th>Why it earns its place</th></tr></thead>
+        <tbody>
+          <tr><td class="k">asset_id</td><td class="k">A-2026-014</td><td>Immutable key. Written on the receipt filename and every ledger row.</td></tr>
+          <tr><td class="k">description</td><td>14" laptop, work</td><td>Plain language, so you can find it in five years.</td></tr>
+          <tr><td class="k">serial</td><td class="k">C02X…</td><td>Ties the row to the physical object. Settles "which laptop was that?".</td></tr>
+          <tr><td class="k">supplier</td><td>—</td><td>Required on written evidence.</td></tr>
+          <tr><td class="k">purchase_date</td><td class="k">2026-02-11</td><td>Starts the depreciation clock and the days-held apportionment.</td></tr>
+          <tr><td class="k">cost_incl</td><td class="k">1890.00</td><td>Full cost, before any work-use split. The $300 and $1,000 tests apply here.</td></tr>
+          <tr><td class="k">evidence</td><td class="k">evidence/2026/…</td><td>Relative path to the invoice file.</td></tr>
+          <tr><td class="k">treatment</td><td class="k">schedule</td><td><code>immediate</code> · <code>pool</code> · <code>schedule</code> — see section 04.</td></tr>
+          <tr><td class="k">effective_life</td><td class="k">2</td><td>Years. Blank for immediate and pooled assets.</td></tr>
+          <tr><td class="k">method</td><td class="k">prime_cost</td><td>Fixed at acquisition. Changing it mid-life is a common error.</td></tr>
+          <tr><td class="k">work_pct</td><td class="k">0.70</td><td>With a note or diary backing it. Can change year to year.</td></tr>
+          <tr><td class="k">status</td><td class="k">in_use</td><td><code>in_use</code> · <code>disposed</code> · <code>scrapped</code>.</td></tr>
+          <tr><td class="k">disposal_date</td><td>—</td><td>Triggers a balancing adjustment.</td></tr>
+          <tr><td class="k">keep_until</td><td class="k">2035-10</td><td>Computed. See the retention clock in section 07.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="schema">
+    <div class="schema-head"><span class="schema-name">depreciation</span><span class="schema-role">One row per asset per year held. Generated, not typed.</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Column</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="k">asset_id</td><td>Foreign key into <code>assets</code>. This is the whole point.</td></tr>
+          <tr><td class="k">year</td><td>Income year, e.g. <code>2025-26</code>.</td></tr>
+          <tr><td class="k">opening</td><td>Prior year's closing. First year = cost.</td></tr>
+          <tr><td class="k">days_held</td><td>365 in a full year; part-year in the year of purchase or disposal.</td></tr>
+          <tr><td class="k">decline</td><td><code>cost × (days_held ÷ 365) × (100% ÷ effective_life)</code> for prime cost.</td></tr>
+          <tr><td class="k">work_pct</td><td>Copied from the register for that year.</td></tr>
+          <tr><td class="k">deductible</td><td><code>decline × work_pct</code>. This is the number that goes on the return.</td></tr>
+          <tr><td class="k">closing</td><td><code>opening − decline</code>. Carries to next year's opening.</td></tr>
+          <tr><td class="k">label</td><td><code>D5</code> for individually scheduled assets, <code>D6</code> for the pool.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="schema">
+    <div class="schema-head"><span class="schema-name">expenses</span><span class="schema-role">One row per expense. Replaces the wide category columns entirely.</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Column</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="k">date</td><td>Date incurred, not date reconciled.</td></tr>
+          <tr><td class="k">year</td><td>Derived from date. Lets you filter a year without a separate tab.</td></tr>
+          <tr><td class="k">description</td><td>What it was, as the supplier described it.</td></tr>
+          <tr><td class="k">supplier</td><td>Required element of written evidence.</td></tr>
+          <tr><td class="k">amount</td><td>Full amount paid.</td></tr>
+          <tr><td class="k">work_pct</td><td>Apportionment. <code>1.0</code> where wholly work-related.</td></tr>
+          <tr><td class="k">claimed</td><td><code>amount × work_pct</code>.</td></tr>
+          <tr><td class="k">label</td><td><code>D1</code>–<code>D15</code>. The single most valuable column in the workbook.</td></tr>
+          <tr><td class="k">basis</td><td>One line on <em>why</em> it's deductible and how the percentage was reached.</td></tr>
+          <tr><td class="k">evidence</td><td>Path to the receipt.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="schema">
+    <div class="schema-head"><span class="schema-name">income</span><span class="schema-role">Investment income and disposals. Salary comes from pre-fill.</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Column</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="k">date</td><td>Payment or disposal date. For a contract of sale, the <em>contract</em> date.</td></tr>
+          <tr><td class="k">type</td><td><code>dividend</code> · <code>distribution</code> · <code>interest</code> · <code>disposal</code> · <code>staking</code> · <code>airdrop</code>.</td></tr>
+          <tr><td class="k">holding</td><td>Ticker or account.</td></tr>
+          <tr><td class="k">gross_foreign</td><td>Amount <strong>before</strong> withholding, in the source currency.</td></tr>
+          <tr><td class="k">fx_rate</td><td>One convention across the whole column. Label it: <code>AUD_per_USD</code>.</td></tr>
+          <tr><td class="k">gross_aud</td><td>Computed. Never typed.</td></tr>
+          <tr><td class="k">tax_withheld_aud</td><td>Feeds the foreign income tax offset.</td></tr>
+          <tr><td class="k">franked / unfranked / credit</td><td>Three separate columns. The return wants them separately.</td></tr>
+          <tr><td class="k">label</td><td>Return item — see section 05.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="schema">
+    <div class="schema-head"><span class="schema-name">year</span><span class="schema-role">One row per income year. The feedback loop the old workbook lacked.</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Column</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="k">year</td><td>—</td></tr>
+          <tr><td class="k">taxable_income</td><td>From the assessment, not your estimate.</td></tr>
+          <tr><td class="k">payg_withheld</td><td>From the income statement.</td></tr>
+          <tr><td class="k">total_deductions</td><td>Sum of <code>expenses.claimed</code> + <code>depreciation.deductible</code>.</td></tr>
+          <tr><td class="k">marginal_plus_levy</td><td>Bracket rate + 2%. Recheck every year.</td></tr>
+          <tr><td class="k">estimated_result</td><td>Your prediction.</td></tr>
+          <tr><td class="k">assessed_result</td><td>What actually happened.</td></tr>
+          <tr><td class="k">variance</td><td>The number that tells you whether the model works.</td></tr>
+          <tr><td class="k">noa_date</td><td><strong>Starts the two-year amendment clock.</strong></td></tr>
+          <tr><td class="k">cf_capital_loss</td><td>Carried-forward net capital loss, as recorded in the lodged return.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section id="trace">
+  <div class="sec-head"><span class="sec-num">03</span><h2>Tracing one laptop, end to end</h2></div>
+
+  <p>This is the test of whether the system works: pick a device bought three years ago and try to answer "what did I claim, on what basis, and where is the proof?" in under two minutes.</p>
+
+  <div class="trace">
+    <div class="trace-step">
+      <div class="trace-when">Purchase day</div>
+      <div class="trace-what"><b>One row in <code>assets</code></b><span>Allocate the next <code>asset_id</code>. Record serial, supplier, date, full cost. Photograph the invoice, save it as <code>evidence/2026/A-2026-014-invoice.pdf</code>, and put that path in the row. The ID is in the filename, so the link survives even if the spreadsheet doesn't.</span></div>
+    </div>
+    <div class="trace-step">
+      <div class="trace-when">Same day</div>
+      <div class="trace-what"><b>Decide the treatment</b><span>Cost decides it, not work use — see section 04. Above $1,000 means <code>schedule</code>, an effective life, and a method chosen once and never changed.</span></div>
+    </div>
+    <div class="trace-step">
+      <div class="trace-when">Each 30 June</div>
+      <div class="trace-what"><b>One row appended to <code>depreciation</code></b><span>Same <code>asset_id</code>, new year. Opening comes from last year's closing. Days held is a part-year in the first and last years only. The deductible figure carries the <code>D5</code> label with it.</span></div>
+    </div>
+    <div class="trace-step">
+      <div class="trace-when">Each lodgment</div>
+      <div class="trace-what"><b>Filter, don't re-derive</b><span>Sum <code>depreciation.deductible</code> where <code>year</code> matches and <code>label = D5</code>. Add it to the <code>expenses</code> rows with the same label. That total is what you type into the return.</span></div>
+    </div>
+    <div class="trace-step">
+      <div class="trace-when">On disposal</div>
+      <div class="trace-what"><b>Close the row, don't delete it</b><span>Set <code>status</code>, <code>disposal_date</code> and proceeds. A balancing adjustment may apply — assessable if you sold for more than the closing value, deductible if less. Deleting the row loses the audit trail and the retention clock.</span></div>
+    </div>
+    <div class="trace-step">
+      <div class="trace-when">Years later</div>
+      <div class="trace-what"><b>The query is one filter</b><span>Filter <code>depreciation</code> by <code>asset_id</code>. You get every year claimed, the running values, and via the register the serial number and evidence path. That is the whole answer.</span></div>
+    </div>
+  </div>
+
+  <div class="note aside">
+    <div class="note-label">Why the ID goes in the filename</div>
+    <p>Evidence and ledger drift apart over a decade — files get reorganised, folders renamed, a laptop replaced. Naming the receipt after the asset makes the link recoverable from either direction: from a row you can find the file, and from a loose file you can find the row. A path alone only works in one direction, and only while the path holds.</p>
+  </div>
+</section>
+
+<!-- 4 -->
+<section id="devices">
+  <div class="sec-head"><span class="sec-num">04</span><h2>The device decision rule</h2></div>
+
+  <p>For someone who buys hardware regularly, this single rule removes most of the judgement — and most of the error. <strong>The test is the item's cost, not the work-related portion.</strong> A $1,890 laptop used 70% for work is a $1,890 asset.</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>Treatment by cost</caption>
+      <thead><tr><th>Cost of the item</th><th>Treatment</th><th class="lbl">Label</th><th>Rate</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="k">$300 or less</td>
+          <td>Immediate deduction in the year you buy it, where used mainly to produce non-business income</td>
+          <td class="lbl">D5</td>
+          <td>100%</td>
+        </tr>
+        <tr>
+          <td class="k">$301 – $999</td>
+          <td>Low-value pool, if you choose to run one</td>
+          <td class="lbl">D6</td>
+          <td>18.75% in the year allocated, then 37.5% diminishing</td>
+        </tr>
+        <tr>
+          <td class="k">$1,000 or more</td>
+          <td>Individual schedule over effective life</td>
+          <td class="lbl">D5</td>
+          <td>Prime cost or diminishing value</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Commissioner's effective lives, common items</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Asset</th><th class="k">Effective life</th></tr></thead>
+      <tbody>
+        <tr><td>Laptop, tablet</td><td class="k">2 years</td></tr>
+        <tr><td>Mobile phone</td><td class="k">3 years</td></tr>
+        <tr><td>Desktop computer</td><td class="k">4 years</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn">
+    <div class="note-label">Three rules that catch people out</div>
+    <ul class="d">
+      <li><strong>The pool choice is one-way.</strong> Once you create a low-value pool and allocate a low-cost asset to it, you must pool every other low-cost asset you acquire in that year <em>and in all later years</em>. Decide deliberately, not by accident.</li>
+      <li><strong>The $300 test applies to sets.</strong> Items that form part of a set costing more than $300 together, or that are identical or substantially identical and together exceed $300, must be depreciated — you cannot split a purchase to get under the line.</li>
+      <li><strong>18.75% applies regardless of when in the year you allocate.</strong> No part-year apportionment in the pool — buying on 30 June gets the same first-year rate as buying on 1 July. This is one of the few places the timing genuinely doesn't matter.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 5 -->
+<section id="map">
+  <div class="sec-head"><span class="sec-num">05</span><h2>The return label map</h2></div>
+
+  <p>This is the table that makes lodgment mechanical. Put the label on the row when you enter the expense — while you still remember why you bought it — and the return becomes a series of filtered sums.</p>
+
+  <h3>Deductions</h3>
+  <div class="table-wrap">
+    <table>
+      <caption>2026 individual return · deduction labels</caption>
+      <thead><tr><th class="lbl">Label</th><th>Question</th><th>What you file here</th></tr></thead>
+      <tbody>
+        <tr><td class="lbl">D1</td><td>Work-related car expenses</td><td>Cents-per-km or logbook, for a car you own or lease. Never home-to-work commuting.</td></tr>
+        <tr><td class="lbl">D2</td><td>Work-related travel expenses</td><td>Fares, accommodation and meals when travelling for work. Distinct from D1.</td></tr>
+        <tr><td class="lbl">D3</td><td>Work clothing, laundry and dry-cleaning</td><td>Compulsory uniforms, protective and occupation-specific clothing. Not conventional clothes.</td></tr>
+        <tr><td class="lbl">D4</td><td>Work-related self-education</td><td>Study connected to your <em>current</em> role. Not study to change careers.</td></tr>
+        <tr><td class="lbl">D5</td><td>Other work-related expenses</td><td>The big one: working-from-home, phone and internet, tools and items $300 or less, union and professional fees, subscriptions, and depreciation on individually scheduled assets.</td></tr>
+        <tr><td class="lbl">D6</td><td>Low-value pool deduction</td><td>The pooled calculation, if you run a pool.</td></tr>
+        <tr><td class="lbl">D7</td><td>Interest income deductions</td><td>Costs of earning the interest declared at item 10 — account-keeping fees on investment accounts.</td></tr>
+        <tr><td class="lbl">D8</td><td>Dividend deductions</td><td>Costs of earning dividends declared at item 11 — interest on borrowings to buy shares, ongoing management fees, investment journals. <strong>Not brokerage</strong>, which goes to the cost base.</td></tr>
+        <tr><td class="lbl">D9</td><td>Gifts or donations</td><td>$2 or more to an Australian deductible gift recipient. Verify on ABN Lookup.</td></tr>
+        <tr><td class="lbl">D10</td><td>Cost of managing tax affairs</td><td>Agent fees, tax software, travel to your agent. Deductible in the year paid.</td></tr>
+        <tr><td class="lbl">D12</td><td>Personal superannuation contributions</td><td>Supplementary. Requires an <strong>acknowledged notice of intent</strong> lodged with your fund before you lodge.</td></tr>
+        <tr><td class="lbl">D15</td><td>Other deductions</td><td>Supplementary. Anything not claimable at D1–D14 — income protection insurance premiums held outside super sit here.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="figcap">D11 (foreign pension UPP), D13 (project pool) and D14 (forestry managed investment scheme) exist but rarely apply to a salaried investor.</p>
+
+  <h3>Income</h3>
+  <div class="table-wrap">
+    <table>
+      <caption>Where investment income lands</caption>
+      <thead><tr><th class="lbl">Item</th><th>Question</th><th>Notes for the ledger</th></tr></thead>
+      <tbody>
+        <tr><td class="lbl">1</td><td>Salary or wages</td><td>Pre-filled once your income statement is marked "Tax ready". Don't type it.</td></tr>
+        <tr><td class="lbl">10</td><td>Gross interest</td><td>Pre-filled from banks, usually by late July.</td></tr>
+        <tr><td class="lbl">11</td><td>Dividends</td><td>Franked, unfranked and franking credit as <strong>three separate figures</strong>. DRP counts as received then reinvested.</td></tr>
+        <tr><td class="lbl">13</td><td>Partnerships and trusts</td><td>Supplementary. Managed fund and ETF distributions — enter the components from the annual tax statement, not the cash received.</td></tr>
+        <tr><td class="lbl">18</td><td>Capital gains</td><td>Supplementary. Losses first, discount last.</td></tr>
+        <tr><td class="lbl">20</td><td>Foreign source income</td><td>Supplementary. Declare <strong>gross, before withholding</strong>; claim the withholding as a foreign income tax offset.</td></tr>
+        <tr><td class="lbl">24</td><td>Other income</td><td>Supplementary. Staking rewards and airdrops, at their AUD value on the date received.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="figcap">Item numbers are from the paper return. myTax presents the same questions under plain-language section headings rather than numbers — the mapping is one-to-one, and the numbers remain the stable way to label a spreadsheet row.</p>
+</section>
+
+<!-- 6 -->
+<section id="evidence">
+  <div class="sec-head"><span class="sec-num">06</span><h2>Evidence that actually counts</h2></div>
+
+  <p>Written evidence from the supplier must show five things. A row in your spreadsheet is not evidence of the expense — it is evidence of your <em>calculation</em>, which is a separate requirement.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Required on the document</th><th>Required separately</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>
+            Cost of the item or service<br>
+            Name of the supplier<br>
+            Nature of the expense<br>
+            Date you bought or paid<br>
+            Date the document was prepared
+          </td>
+          <td>
+            How you calculated the claim<br>
+            Work-related versus private use
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn">
+    <div class="note-label">A card statement is not a receipt</div>
+    <p>The ATO states plainly that a bank or credit card statement on its own is not written evidence — it isn't from the supplier and generally lacks the required elements. If your process reconciles from card statements, it is producing a payment trail, not substantiation. Capture the supplier's invoice at purchase.</p>
+  </div>
+
+  <h3>Where receipts can be skipped</h3>
+  <ul class="d">
+    <li><strong>Total work-related expenses of $300 or less</strong> — no written evidence needed, but you must still have spent the money and be able to explain the calculation. Cross $300 and you need evidence for the <em>whole</em> amount. Car, travel allowance and meal allowance claims sit outside this rule.</li>
+    <li><strong>Total laundry of $150 or less</strong></li>
+    <li><strong>Small expense and hard-to-get receipt</strong> exceptions, in defined circumstances</li>
+  </ul>
+
+  <h3>File naming</h3>
+  <p>One convention, applied without exception, is worth more than a clever folder tree:</p>
+  <pre>evidence/
+  2025-26/
+    A-2026-014-invoice.pdf          ← asset, keyed to the register
+    D5-2026-03-14-telco-invoice.pdf ← expense, keyed by label + date
+    statements/
+      annual-tax-statement-*.pdf
+    hours-log-2025-26.xlsx</pre>
+  <p>Digital copies are explicitly accepted, including photographs of paper receipts, provided they are true and clear copies. Records must be in English where the expense was incurred in Australia.</p>
+</section>
+
+<!-- 7 -->
+<section id="storage">
+  <div class="sec-head"><span class="sec-num">07</span><h2>Where the records should live</h2></div>
+
+  <h4>The retention clock is longer than five years</h4>
+  <p>Most people hold "five years" in their head. That is the general rule, but two exceptions matter enormously for a workbook full of devices and shares:</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Record type</th><th>Keep for</th><th>What that means in practice</th></tr></thead>
+      <tbody>
+        <tr><td>General expense</td><td class="k">5 years from lodgment</td><td>A 2025–26 receipt: until roughly 2031.</td></tr>
+        <tr><td>Depreciating asset</td><td class="k">5 years from the <strong>last</strong> decline-in-value claim</td><td>A laptop with a 2-year life bought in 2026: claims end 2028, keep until <strong>2033</strong> — seven years from purchase.</td></tr>
+        <tr><td>CGT asset</td><td class="k">5 years after no CGT event can happen</td><td>A share parcel held fifteen years then sold: acquisition records needed for <strong>twenty years</strong>.</td></tr>
+        <tr><td>Under dispute</td><td class="k">the later of 5 years from lodgment or 5 years from resolution</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>This is why the <code>keep_until</code> column exists in the register. Without it, you are guessing — and the instinct to tidy up old files runs directly against a twenty-year obligation.</p>
+
+  <h4>So — is iCloud still the right home?</h4>
+
+  <p><strong>Yes, keep it — but stop treating sync as backup.</strong> The ATO's own position is permissive: records may be kept in paper or electronic format, you may use any electronic device or app, and digital copies including photographs are recognised. It then adds one instruction, which is the whole answer to this question: <em>back up your electronic records regularly</em>.</p>
+
+  <p>iCloud Drive is a sync service. It propagates every change, including the bad ones. A corrupted workbook, an accidental deletion or a bad formula overwrite replicates to every device you own within seconds — and the "backup" you thought you had is now the same broken file. Sync protects against losing a laptop. It does not protect against losing the data.</p>
+
+  <div class="note">
+    <div class="note-label">What to change</div>
+    <ul class="d">
+      <li><strong>Turn on Advanced Data Protection.</strong> Apple's optional end-to-end encryption for iCloud Drive. Without it your financial records are encrypted in transit and at rest, but Apple holds the keys. With it, they don't. This is the single highest-value change.</li>
+      <li><strong>Snapshot at every lodgment.</strong> When a return is lodged, freeze a dated, read-only copy of the workbook and that year's evidence folder. Never edit it again. This is what makes a five-year-old claim defensible — you can show what you filed, not what the file has become since.</li>
+      <li><strong>Keep one copy off iCloud entirely.</strong> An external drive or a second provider. One account closure, billing lapse or lockout should not be able to end the record. Given the retention periods above, plan for the account outliving neither you nor the obligation.</li>
+      <li><strong>Verify the backup restores.</strong> Once a year, open the snapshot from the second location. An unverified backup is a belief, not a control.</li>
+      <li><strong>Fix what is in the file, not just where it sits.</strong> Storage security is irrelevant if the workbook carries a TFN. Remove identity numbers — no formula needs them.</li>
+    </ul>
+  </div>
+
+  <div class="note warn">
+    <div class="note-label">Don't put the workbook in git</div>
+    <p>An <code>.xlsx</code> is a binary archive. Git cannot diff it, stores a complete new copy on every commit, and — the part that matters — history is effectively permanent. A single accidental commit of a file containing a TFN cannot be undone by deleting the file later. Version-control the <em>process documents</em>; keep the ledger and evidence in ignored folders or outside the repository entirely.</p>
+  </div>
+</section>
+
+<!-- 8 -->
+<section id="rhythm">
+  <div class="sec-head"><span class="sec-num">08</span><h2>The annual rhythm</h2></div>
+
+  <p>The failure mode of any tax workbook is a burst of activity in October reconstructing nine months of memory. These are the only recurring commitments the system needs.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>What</th><th>Why then</th></tr></thead>
+      <tbody>
+        <tr><td class="k">At purchase</td><td>Register the asset, file the invoice, set the treatment</td><td>The only moment you reliably remember the work purpose.</td></tr>
+        <tr><td class="k">Weekly</td><td>Log hours worked from home</td><td>Cannot be reconstructed later, and gates the fixed rate entirely.</td></tr>
+        <tr><td class="k">Monthly</td><td>Append expense rows with labels and evidence paths</td><td>Small enough to actually do.</td></tr>
+        <tr><td class="k">One month a year</td><td>Run the 4-week phone and internet usage diary</td><td>Supports the percentage for the whole year.</td></tr>
+        <tr><td class="k">Before 30 June</td><td>Decide on any personal super contribution and lodge the notice of intent</td><td>The deduction is lost if the notice is late.</td></tr>
+        <tr><td class="k">30 June</td><td>Generate the depreciation rows; export broker history</td><td>Platforms retain only a rolling window.</td></tr>
+        <tr><td class="k">Late July</td><td>Check pre-fill is complete before lodging</td><td>Lodging early is the main cause of amended assessments.</td></tr>
+        <tr><td class="k">At lodgment</td><td>Record the NOA date, assessed result and variance; snapshot the year</td><td>Starts the amendment clock and closes the loop.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 9 -->
+<section id="migration">
+  <div class="sec-head"><span class="sec-num">09</span><h2>Migrating without redoing everything</h2></div>
+
+  <p>You do not need to rebuild history. You need the current position to be correct and the trail to be recoverable.</p>
+
+  <ol class="s">
+    <li><strong>Create the five sheets empty</strong>, in a copy of the workbook. Leave the year tabs untouched as the historical record.</li>
+    <li><strong>Populate <code>assets</code> from the past years' equipment rows.</strong> Every item over $300 gets a row, backdated, with its real purchase date and cost. This is the bulk of the work and it is done once.</li>
+    <li><strong>Back-fill <code>depreciation</code></strong> from each asset's purchase date to the current year. Where the original claim was wrong, record what <em>should</em> have happened — the corrected schedule is what the current year's opening values depend on.</li>
+    <li><strong>Record NOA dates in <code>year</code></strong> for every year still potentially open. This tells you which corrections can still be lodged and which are historical only.</li>
+    <li><strong>Enter carried-forward capital losses</strong> as recorded in the lodged returns — not as calculated in the old sheets. If the two differ, the lodged figure is what exists.</li>
+    <li><strong>Start the current year clean</strong> in the new structure. Do not maintain both shapes in parallel past one year.</li>
+    <li><strong>Snapshot the old workbook read-only</strong> and keep it for the full retention period. It is the evidence of what you previously filed.</li>
+  </ol>
+
+  <div class="note aside">
+    <div class="note-label">The one-time cost is the asset register</div>
+    <p>Everything else in this migration is mechanical. Reconstructing purchase dates and costs for devices bought several years ago is genuinely tedious — and it is also the step that makes every future year easier, and the step that produces the carried depreciation the old structure was throwing away.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <p>General research only, current to August 2026 and specific to Australian resident individuals with salary and investment income. Not personal tax, financial or legal advice. Form labels are from the 2026 individual return and change between years — reverify each season. Confirm anything you act on against <a href="https://www.ato.gov.au">ato.gov.au</a> or a registered tax agent.</p>
+  <p>No personal figures appear in this document by design. Keep amounts, identity numbers and evidence in your own records, not here.</p>
+</footer>
+
+</div>
+</body>
+</html>
