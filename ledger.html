@@ -236,7 +236,13 @@ let autosaveOK = true;    // false when the browser refuses to store
    DATE / FINANCIAL YEAR HELPERS
    ============================================================ */
 
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Dates here are calendar dates, not instants. toISOString() converts to UTC,
+// which in Australian time zones lands on the previous day — and the drift
+// compounds on every round trip. Format from local components instead.
+function iso(x){
+  return x.getFullYear() + "-" + String(x.getMonth()+1).padStart(2,"0") + "-" + String(x.getDate()).padStart(2,"0");
+}
+function todayISO(){ return iso(new Date()); }
 function d(s){ if(!s) return null; const x = new Date(s+"T00:00:00"); return isNaN(x) ? null : x; }
 function fyOf(dateStr){
   const x = d(dateStr); if(!x) return null;
@@ -261,7 +267,7 @@ function daysHeldIn(fy, purchase, disposal){
 function addYears(dateStr, n){
   const x = d(dateStr); if(!x) return null;
   x.setFullYear(x.getFullYear()+n);
-  return x.toISOString().slice(0,10);
+  return iso(x);
 }
 
 /* ============================================================
@@ -335,6 +341,9 @@ function derive(){
       const life = num(a.effective_life) || suggestLife(a.description);
       const cost = num(a.cost);
       const opening = assetState[a.asset_id] === undefined ? cost : assetState[a.asset_id];
+      // Fully written off and not disposed of: no claim, so no row. A zero row is
+      // noise in the trace and would push the retention date out by a year.
+      if (opening <= 0.005 && !(a.disposal_date && fyOf(a.disposal_date) === fy)) continue;
       let decline;
       if (a.method === "diminishing") decline = opening * (days/365) * (2/life);
       else decline = cost * (days/365) * (1/life);
@@ -370,8 +379,10 @@ function derive(){
   // ---- retention: keep_until per asset
   const keep = {};
   for (const a of M.assets) {
-    const rows = dep.filter(r => r.asset_id === a.asset_id);
-    const lastClaim = rows.length ? fyEnd(rows[rows.length-1].year).toISOString().slice(0,10) : a.purchase_date;
+    // "5 years from the date of your last claim for decline in value" — the last
+    // year with an actual claim, not merely the last year the asset was held.
+    const rows = dep.filter(r => r.asset_id === a.asset_id && r.deductible > 0.005);
+    const lastClaim = rows.length ? iso(fyEnd(rows[rows.length-1].year)) : a.purchase_date;
     const candidates = [addYears(lastClaim, 5)];
     if (a.disposal_date) candidates.push(addYears(a.disposal_date, 5));
     const yr = M.years.find(y => y.year === fyOf(a.purchase_date));
