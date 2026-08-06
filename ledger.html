@@ -279,6 +279,10 @@ const WFH_FIXED_RATE = 0.70;
 // 37.5% diminishing thereafter. Opening a pool is one-way: every later low-cost
 // asset must join it. ato.gov.au > depreciation > low-value pools
 const POOL_FIRST_YEAR = 0.1875, POOL_ONGOING = 0.375;
+// A pool balance does not need a human-created year before it can roll forward. Show the
+// allocation year plus four later years automatically; the figures remain derived and are
+// never written into the ledger file.
+const POOL_DISPLAY_YEARS = 5;
 
 // Immediate deduction at or below $300; low-cost asset below $1,000. Both tests
 // apply to the item's COST, never to the work-use share, and both are defeated
@@ -453,17 +457,41 @@ function treatmentFor(cost){
    DERIVE — everything computed, nothing stored
    ============================================================ */
 
-function allYears(){
+function enteredYears(){
   const s = new Set(M.years.map(y => y.year));
   M.expenses.forEach(e => { const f = fyOf(e.date); if(f) s.add(f); });
   M.income.forEach(i => { const f = fyOf(i.date); if(f) s.add(f); });
   M.assets.forEach(a => { const f = fyOf(a.purchase_date); if(f) s.add(f); });
+  return [...s].sort();
+}
+function allYears(){
+  const s = new Set(enteredYears());
+  let firstPoolYear = null;
+  M.assets.forEach(a => {
+    let f = fyOf(a.purchase_date);
+    if (!f || a.treatment !== "pool") return;
+    if (!firstPoolYear || f < firstPoolYear) firstPoolYear = f;
+    for (let i = 1; i < POOL_DISPLAY_YEARS; i++) {
+      f = fyNext(f);
+      s.add(f);
+    }
+  });
+  // Once a pool is open, its closing balance must pass through every income year. If a
+  // later transaction is entered after a gap, filling that gap is calculation, not data
+  // entry; otherwise one or more 37.5% deductions would silently be skipped.
+  if (firstPoolYear) {
+    const last = [...s].sort().pop();
+    for (let f = firstPoolYear; f <= last; f = fyNext(f)) s.add(f);
+  }
   if (!s.size) s.add(fyOf(todayISO()) || "2025-26");
   return [...s].sort();
 }
+function defaultYearRec(fy){
+  return { year:fy, wfh_method:"fixed", wfh_hours:0, marginal:0.32 };
+}
 function yearRec(fy){
   let y = M.years.find(x => x.year === fy);
-  if (!y) { y = { year:fy, wfh_method:"fixed", wfh_hours:0, marginal:0.32 }; M.years.push(y); }
+  if (!y) { y = defaultYearRec(fy); M.years.push(y); }
   return y;
 }
 
@@ -889,7 +917,12 @@ function removeRow(coll, id){
 
 function render(){
   derive();
-  if (!activeYear || !derived.years.includes(activeYear)) activeYear = derived.years[derived.years.length-1];
+  if (!activeYear || !derived.years.includes(activeYear)) {
+    // Pool projections add future choices to the year picker, but opening a ledger should
+    // still land on its latest entered year rather than jumping four returns ahead.
+    const entered = enteredYears();
+    activeYear = entered[entered.length-1] || derived.years[derived.years.length-1];
+  }
   renderRecovery();
   renderTopbar(); renderLodgment(); renderAssets(); renderExpenses();
   renderIncome(); renderYear(); renderData();
@@ -1070,13 +1103,14 @@ function renderAssets(){
 
     <div class="note"><b>Treatment is set by cost</b>
       $300 or less → immediate deduction (D5) · $301–999 → low-value pool (D6) · $1,000 or more → individual schedule (D5).
-      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.</div>
+      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.
+      A pooled asset automatically fills five income years of pool calculations.</div>
     ${derived.pool[activeYear] && derived.pool[activeYear].deduction > 0 ? `<div class="note aside">
-      <b>Pooled assets claim at D6, not on their own row</b>
+      <b>Pooled assets claim at D6 as one pool total</b>
       The pool is one deduction: <b>${money(derived.pool[activeYear].deduction)}</b> this year, on a closing balance of
-      ${money(derived.pool[activeYear].closing)}. First year in the pool is 18.75% of what you add (shown per asset above,
-      marked *), every year after is 37.5% of the whole balance — which by then belongs to no single asset. Find the total
-      on the Lodgment tab under D6.</div>` : ""}`;
+      ${money(derived.pool[activeYear].closing)}. Each amount marked * above is that row's calculated contribution to the
+      total: 18.75% in its first year, then 37.5% of its remaining contribution. The return still claims the combined pool
+      amount; find it on the Lodgment tab under D6.</div>` : ""}`;
 }
 
 function assetDetail(a){
@@ -1163,18 +1197,28 @@ function resetTreatment(id){
   touch();
 }
 
-// A pooled asset has no claim of its own. The pool is deducted as one amount at D6 —
-// 18.75% of what goes in during its first year, then 37.5% of the running balance,
-// which by then belongs to no single asset. Show the contribution where it exists and
-// say where the money went where it does not, because "—" reads as "nothing claimed".
+// D6 is claimed as one pool amount, but the arithmetic is linear, so each asset's original
+// contribution can still be rolled forward to explain its share of that total. This is a
+// display breakdown only; buildLodgment() keeps the legal claim as one pool balance.
+function poolAssetClaim(a, fy){
+  const allocationYear = fyOf(a.purchase_date);
+  const from = allocationYear ? parseInt(allocationYear.slice(0,4), 10) : NaN;
+  const to = fy ? parseInt(fy.slice(0,4), 10) : NaN;
+  if (a.treatment !== "pool" || !Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
+  let balance = num(a.cost) * wpFrac(workPctFor(a, allocationYear));
+  for (let year = from; year <= to; year++) {
+    const claim = balance * (year === from ? POOL_FIRST_YEAR : POOL_ONGOING);
+    if (year === to) return claim;
+    balance = Math.max(0, balance - claim);
+  }
+  return null;
+}
 function poolClaimCell(a){
   const p = derived.pool[activeYear];
+  const share = poolAssetClaim(a, activeYear);
+  if (share === null) return "—";
   const total = p ? money(p.deduction) : money(0);
-  if (fyOf(a.purchase_date) === activeYear) {
-    const share = num(a.cost) * wpFrac(workPctFor(a, activeYear)) * POOL_FIRST_YEAR;
-    return `<span title="Its first-year share: ${money(share)} of the ${total} pool deduction, claimed at D6 — not on this row.">${money(share)}*</span>`;
-  }
-  return `<span class="pill pool" title="Claimed at D6. From the second year the pool is deducted at 37.5% of the whole balance, so no part of it belongs to one asset. Pool deduction this year: ${total}.">in pool</span>`;
+  return `<span title="This row contributes ${money(share)} to this year's ${total} D6 pool deduction. D6 is claimed as one combined pool total.">${money(share)}*</span>`;
 }
 
 function renderExpenses(){
@@ -1335,7 +1379,9 @@ function renderIncome(){
 }
 
 function renderYear(){
-  const y = yearRec(activeYear);
+  // Automatically projected pool years are calculated output. Viewing one must not turn
+  // it into persisted user input; yearField() creates the record only when it is edited.
+  const y = M.years.find(x => x.year === activeYear) || defaultYearRec(activeYear);
   const L = derived.lodgment[activeYear] || { deductions:{} };
   const totalDed = Object.values(L.deductions).reduce((s,b) => s + b.total, 0);
   const deadline = y.noa_date ? addYears(y.noa_date, 2) : null;

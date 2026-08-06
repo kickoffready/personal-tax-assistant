@@ -181,10 +181,34 @@ t('it reaches the return at D6', near(P.lodgment['2025-26'].deductions.D6.total,
 t('the asset row shows its share, not a dash', poolClaimCell(M.assets[0]).includes('58.19'),'58.19','58.19');
 t('year two is 37.5% of the balance', near(P.pool['2026-27'].deduction,94.55), P.pool['2026-27'].deduction.toFixed(2),'94.55');
 activeYear='2026-27';
-t('later years say where the claim went', poolClaimCell(M.assets[0]).includes('in pool'),'in pool','in pool');
+t('later years show the asset contribution as a value', poolClaimCell(M.assets[0]).includes('94.55'),
+  poolClaimCell(M.assets[0]), '94.55');
+t('the old "in pool" placeholder is gone', !poolClaimCell(M.assets[0]).includes('in pool'),
+  poolClaimCell(M.assets[0]), 'a value');
 activeYear='2025-26';
 M.assets[0].work_pct={'2025-26':0}; P=derive();
 t('a 0% asset adds nothing to the pool', P.pool['2025-26'].deduction===0, P.pool['2025-26'].deduction, 0);
+
+console.log('\\n— pooled assets automatically fill five years');
+setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-5Y',description:'dock',
+  purchase_date:'2025-11-24',cost:800,treatment:'pool',work_pct:{'2025-26':100}}]});
+P=derive();
+t('allocation year plus four later years appear automatically',
+  P.years.join(',')==='2025-26,2026-27,2027-28,2028-29,2029-30', P.years.join(','),
+  '2025-26,2026-27,2027-28,2028-29,2029-30');
+t('only the allocation year counts as entered data', enteredYears().join(',')==='2025-26',
+  enteredYears().join(','), '2025-26');
+t('all five years have pool data', Object.keys(P.pool).length===5, Object.keys(P.pool).length, 5);
+t('year five carries the pool forward at 37.5%', near(P.pool['2029-30'].deduction,59.51),
+  P.pool['2029-30'].deduction.toFixed(2), '59.51');
+t('automatic years are derived, not saved into the ledger', M.years.length===1, M.years.length, 1);
+M.income.push({id:'later',date:'2031-08-01',type:'interest',gross_aud:1});
+P=derive();
+t('a later row cannot make the pool skip intervening years',
+  P.years.includes('2030-31') && P.years.includes('2031-32'), P.years.join(','),
+  'contains 2030-31 and 2031-32');
+t('the later balance has received every annual deduction', near(P.pool['2031-32'].opening,61.989),
+  P.pool['2031-32'].opening.toFixed(3), '61.989');
 
 console.log('\\n— retention for assets that never produce a per-asset claim');
 setModel({years:[{year:'2025-26'},{year:'2026-27'},{year:'2027-28'}], assets:[
@@ -539,6 +563,9 @@ t('the carried-forward line is the 37.5% charge',
   near(d6y2.lines.find(l=>l.name==='pool balance brought forward').amount, d6p2.ongoing),
   d6y2.lines.find(l=>l.name==='pool balance brought forward').amount.toFixed(2), d6p2.ongoing.toFixed(2));
 t('the two halves still reconcile', near(d6y2.total, d6p2.deduction), d6y2.total.toFixed(2), d6p2.deduction.toFixed(2));
+t('the asset-row values also reconcile to the pool total',
+  near(M.assets.reduce((sum,a) => sum + (poolAssetClaim(a,'2026-27') || 0), 0), d6p2.deduction),
+  M.assets.reduce((sum,a) => sum + (poolAssetClaim(a,'2026-27') || 0), 0).toFixed(2), d6p2.deduction.toFixed(2));
 t('the old assets are NOT re-attributed in year two',
   !d6y2.lines.find(l=>l.name==='Peripherals'), 'absent','absent');
 
