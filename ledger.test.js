@@ -289,6 +289,56 @@ t('your own year settings stand', M.years.find(y=>y.year==='2025-26').marginal==
   M.years.find(y=>y.year==='2025-26').marginal, 0.47);
 t('a genuinely new year is added', M.years.some(y=>y.year==='2027-28'), 'added','added');
 
+console.log('\\n— the same supplier under two different names is one supplier');
+t('company suffixes are noise', normaliseSupplier('OPTUS PTY LTD')===normaliseSupplier('Optus'),
+  normaliseSupplier('OPTUS PTY LTD'), normaliseSupplier('Optus'));
+t('punctuation and case are noise', normaliseSupplier('GitHub, Inc.')===normaliseSupplier('github inc'),
+  normaliseSupplier('GitHub, Inc.'), normaliseSupplier('github inc'));
+t('Dell Australia is Dell', normaliseSupplier('Dell Australia')==='dell', normaliseSupplier('Dell Australia'),'dell');
+t('different suppliers stay different', normaliseSupplier('Optus')!==normaliseSupplier('Cloudflare'),
+  'differ','differ');
+
+console.log('\\n— PayPal and the card that funded it: the duplicate no key can catch');
+setModel({years:[{year:'2025-26'}], expenses:[]});
+activeYear='2025-26';
+applyImport(planImport({schema:2, expenses:[{id:'pp',date:'2026-06-20',description:'internet',
+  supplier:'Optus',amount:300,work_pct:70,label:'D5',source:'paypal',source_ref:'TXN-1'}]}));
+t('the grouped PayPal row claims 210.00', near(derive().lodgment['2025-26'].deductions.D5.total,210),
+  derive().lodgment['2025-26'].deductions.D5.total.toFixed(2),'210.00');
+
+const card = {schema:2, expenses:['2025-07-21','2025-08-21','2025-09-21','2025-10-21','2025-11-21','2025-12-21',
+  '2026-01-21','2026-02-21','2026-03-21','2026-04-21','2026-05-21','2026-06-21'].map((d,i)=>
+  ({id:'c'+i,date:d,description:'OPTUS PTY LTD',supplier:'OPTUS PTY LTD',amount:25,work_pct:70,
+    label:'D5',source:'card',source_ref:'CARD-'+i}))};
+const cp = planImport(card);
+t('no key matches them — they are still planned as new', cp.add.expenses.length===12, cp.add.expenses.length, 12);
+t('but the overlap is caught and reported', cp.cross.length===1, cp.cross.length, 1);
+t('the preview names the source already present', cp.cross[0].existing.includes('paypal'),
+  cp.cross[0].existing.join(','), 'paypal');
+t('the preview warning is not empty', planSummary(cp).warn.includes('DIFFERENT SOURCE'), 'warned','warned');
+
+console.log('\\n— and if it is imported anyway, lodgment still says so');
+applyImport(cp);
+t('the claim has doubled, as it must', near(derive().lodgment['2025-26'].deductions.D5.total,420),
+  derive().lodgment['2025-26'].deductions.D5.total.toFixed(2),'420.00');
+const dupWarn = derive().warnings.find(x=>x.title.indexOf('sources in')>-1);
+t('a high warning is raised', !!dupWarn && dupWarn.sev==='high', dupWarn && dupWarn.sev, 'high');
+t('it names both sources', dupWarn.detail.indexOf('paypal')>-1 && dupWarn.detail.indexOf('card')>-1,
+  'both named','both named');
+
+console.log('\\n— one source per supplier raises nothing');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'a',date:'2026-06-20',supplier:'Optus',description:'internet',amount:300,work_pct:70,label:'D5',source:'paypal'},
+  {id:'b',date:'2026-06-27',supplier:'Cloudflare',description:'hosting',amount:81,work_pct:100,label:'D5',source:'card'}]});
+activeYear='2025-26';
+t('two suppliers, one source each, no warning',
+  derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length===0,
+  derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length, 0);
+M.expenses.push({id:'c',date:'2026-03-01',supplier:'Optus',description:'internet',amount:25,work_pct:70,label:'D5'});
+t('a hand-entered row counts as its own source',
+  derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length===1,
+  derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length, 1);
+
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
   purchase_date:'2026-01-01',cost:2000,treatment:'schedule',effective_life:2,method:'prime_cost',work_pct:{'2025-26':100}}]});

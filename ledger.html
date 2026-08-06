@@ -596,9 +596,49 @@ function grossAud(i){
    INTEGRITY CHECKS — the review findings, as guardrails
    ============================================================ */
 
+// "Optus", "OPTUS PTY LTD" and "Optus Pty. Ltd." are one supplier. Field-level
+// duplicate detection cannot see that, so anything comparing suppliers across sources
+// has to compare them normalised.
+const SUPPLIER_NOISE = /\b(pty|ltd|limited|inc|llc|corp|co|pte|gmbh|plc|australia|au)\b/g;
+function normaliseSupplier(s){
+  return String(s || "").toLowerCase()
+    .replace(/[.,''`"()\-_/]/g, " ")
+    .replace(SUPPLIER_NOISE, " ")
+    .replace(/\s+/g, " ").trim();
+}
+function sourceOf(r){ return r.source || "entered by hand"; }
+
+// Every row from every source, keyed by year and normalised supplier. Used both by the
+// overlap check below and by the import preview, so the two always agree.
+function supplierIndex(){
+  const ix = {};
+  const put = (fy, sup, src, amt) => {
+    if (!fy || !sup) return;
+    const k = fy + "|" + sup;
+    (ix[k] = ix[k] || { fy, sup, sources:{} });
+    ix[k].sources[src] = (ix[k].sources[src] || 0) + num(amt);
+  };
+  for (const e of M.expenses) put(fyOf(e.date), normaliseSupplier(e.supplier || e.description), sourceOf(e), e.amount);
+  for (const a of M.assets)   put(fyOf(a.purchase_date), normaliseSupplier(a.supplier || a.description), sourceOf(a), a.cost);
+  return ix;
+}
+
 function runChecks(){
   const w = [];
   const push = (sev, title, detail) => w.push({ sev, title, detail });
+
+  // The same spending arriving from two sources. PayPal is funded by a card, so every
+  // PayPal charge also sits on that card's statement — under different merchant text, a
+  // different date, and often a different shape (one grouped row against twelve monthly
+  // ones). Nothing at field level can match those, so the overlap itself is the signal.
+  for (const g of Object.values(supplierIndex())) {
+    const srcs = Object.keys(g.sources);
+    if (srcs.length < 2) continue;
+    push("high", "“" + g.sup + "” has rows from " + srcs.length + " sources in " + fyLabel(g.fy),
+      srcs.map(s => s + " " + money(g.sources[s])).join(" · ") +
+      ". A charge funded through one account appears in both exports under different names and dates, " +
+      "so it will not be caught as a duplicate. Keep one source per supplier and remove the other.");
+  }
 
   for (const a of M.assets) {
     if (a.treatment === "immediate" && num(a.cost) > IMMEDIATE_THRESHOLD)
@@ -1374,7 +1414,8 @@ function rowKeys(r, kind){
 
 function planImport(parsed){
   const incoming = migrate(Object.assign(emptyModel(), parsed));
-  const plan = { add:{assets:[],expenses:[],income:[]}, skip:{assets:[],expenses:[],income:[]}, years:[] };
+  const plan = { add:{assets:[],expenses:[],income:[]}, skip:{assets:[],expenses:[],income:[]}, years:[], cross:[] };
+  const ix = supplierIndex();
   for (const kind of ["assets","expenses","income"]) {
     const seen = new Set();
     for (const r of M[kind]) for (const k of rowKeys(r, kind)) seen.add(k);
@@ -1385,6 +1426,23 @@ function planImport(parsed){
       plan.add[kind].push(r);
     }
   }
+  // Anything about to be added for a supplier this ledger already holds from a
+  // DIFFERENT source. Not a duplicate by any key we can check — which is exactly why
+  // it has to be said out loud, at the one moment cancelling is still free.
+  const seenCross = {};
+  const noteCross = (fy, sup, src) => {
+    if (!fy || !sup) return;
+    const g = ix[fy + "|" + sup]; if (!g) return;
+    const others = Object.keys(g.sources).filter(x => x !== src);
+    if (!others.length) return;
+    const k = fy + "|" + sup + "|" + src;
+    if (seenCross[k]) return;
+    seenCross[k] = true;
+    plan.cross.push({ fy, sup, incoming: src, existing: others, amounts: g.sources });
+  };
+  plan.add.expenses.forEach(r => noteCross(fyOf(r.date), normaliseSupplier(r.supplier || r.description), sourceOf(r)));
+  plan.add.assets.forEach(r => noteCross(fyOf(r.purchase_date), normaliseSupplier(r.supplier || r.description), sourceOf(r)));
+
   for (const y of (incoming.years || []))
     if (!M.years.some(x => x.year === y.year)) plan.years.push(y);
   return plan;
@@ -1425,7 +1483,17 @@ function planSummary(plan){
     if (plan.skip[kind].length) lines.push(`  skip ${plan.skip[kind].length} ${kind} already present`);
   }
   if (plan.years.length) lines.push(`  add ${plan.years.length} year record(s)`);
-  return { total: n(plan.add), skipped: n(plan.skip), text: lines.join("\n") || "  nothing to add" };
+  let warn = "";
+  if (plan.cross && plan.cross.length) {
+    warn = "\n\nSAME SUPPLIER, DIFFERENT SOURCE — check before you import:\n" +
+      plan.cross.map(c => `  ${c.sup} in ${fyLabel(c.fy)} is already here from ${c.existing.join(", ")}` +
+        ` (${c.existing.map(s => money(c.amounts[s])).join(", ")})`).join("\n") +
+      "\n\nThe same spending funded through one account appears in both exports under\n" +
+      "different names and dates, so it cannot be matched automatically. Importing\n" +
+      "both claims it twice.";
+  }
+  return { total: n(plan.add), skipped: n(plan.skip), cross: (plan.cross||[]).length,
+           text: lines.join("\n") || "  nothing to add", warn };
 }
 
 function importFile(file){
@@ -1448,7 +1516,7 @@ function importFile(file){
             "\n\nNothing was changed.");
       return;
     }
-    if (!confirm("Import from " + file.name + "?\n\n" + s.text +
+    if (!confirm("Import from " + file.name + "?\n\n" + s.text + s.warn +
                  "\n\nExisting rows are kept. Nothing is overwritten." +
                  "\nImported work use is whatever the file says — check it before you claim.")) return;
     applyImport(plan);
