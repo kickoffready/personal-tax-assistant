@@ -191,6 +191,8 @@ const INCOME_LABELS = {
   I10:"Gross interest", I11:"Dividends", I13:"Partnerships and trusts",
   I18:"Capital gains", I20:"Foreign source income", I24:"Other income"
 };
+// Commissioner's effective lives, in years. Self-assessing a shorter life is
+// permitted but must be justifiable. ato.gov.au > effective life of an asset
 const EFFECTIVE_LIVES = [
   [/laptop|macbook|notebook|tablet|ipad/i, 2],
   [/phone|iphone|android|mobile/i, 3],
@@ -210,8 +212,24 @@ const LABEL_HINTS = [
   [/broker|margin loan|share loan/i, "D8"],
   [/bank fee|account keeping|account-keeping/i, "D7"]
 ];
+/* These four encode law, not preference. Each is sourced in personal/RULES.md.
+   Changing one without changing that file, and without a test failing, means
+   the tool and its documentation have silently diverged. */
+
+// Working from home, fixed rate. 2024-25 and 2025-26. Covers energy, phone,
+// internet, stationery and consumables — none of which may then be claimed
+// separately. ato.gov.au > deductions > working from home > fixed rate method
 const WFH_FIXED_RATE = 0.70;
+
+// Low-value pool. 18.75% in the year of allocation regardless of purchase date,
+// 37.5% diminishing thereafter. Opening a pool is one-way: every later low-cost
+// asset must join it. ato.gov.au > depreciation > low-value pools
 const POOL_FIRST_YEAR = 0.1875, POOL_ONGOING = 0.375;
+
+// Immediate deduction at or below $300; low-cost asset below $1,000. Both tests
+// apply to the item's COST, never to the work-use share, and both are defeated
+// by sets or substantially identical items that together cross the line.
+// ato.gov.au > deductions > assets costing more than $300
 const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
 const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
 
