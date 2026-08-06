@@ -218,6 +218,24 @@ t('no year yet still produces a valid name', saveFileName(T)==='ledger-unfiled-2
   saveFileName(T), 'ledger-unfiled-20260806-193005.json');
 t('two saves a second apart differ',
   saveFileName(new Date(2026,7,6,19,30,5))!==saveFileName(new Date(2026,7,6,19,30,6)), 'differ','differ');
+
+// The browser's own duplicate marker must never become part of the name.
+const T2 = new Date(2026, 7, 6, 20, 9, 0);
+const WANT = 'ledger-fy2025-26-20260806-200900.json';
+[['ledger-fy2025-26 (2).json',                    'a browser duplicate of an unstamped file'],
+ ['ledger-fy2025-26 (2)-20260806-200900.json',    'the marker already baked into a stamped name'],
+ ['ledger-fy2025-26-20260806-200900 (2).json',    'the marker appended after a stamp'],
+ ['ledger-fy2025-26 (12).json',                   'a two-digit marker'],
+ ['ledger-fy2025-26 (2) (3).json',                'markers that bred'],
+ ['ledger-fy2025-26.json',                        'a clean name is untouched']
+].forEach(([given, why]) => {
+  fileName = given;
+  t(why, saveFileName(T2)===WANT, saveFileName(T2), WANT);
+});
+fileName = 'ledger-2025.json';
+t('a name that merely ends in digits keeps them',
+  saveFileName(T2)==='ledger-2025-20260806-200900.json', saveFileName(T2), 'ledger-2025-20260806-200900.json');
+fileName = null; activeYear='2025-26';
 activeYear='2025-26'; fileName=null;
 
 console.log('\\n— importing merges, and refuses to claim the same row twice');

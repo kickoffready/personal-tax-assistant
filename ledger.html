@@ -1362,8 +1362,20 @@ function stamp(dt){
 }
 // The stem survives a round trip: loading ledger-2025-26-20260806-193000.json and
 // saving again gives ledger-2025-26-<new stamp>.json, not a stack of stamps.
+//
+// It also has to survive the browser. A file saved before timestamps existed came back
+// as "ledger-2025-26 (2).json", and that "(2)" is the browser's marker, not part of the
+// name — left in the stem it breeds through every later save. Strip both markers, in
+// either order, until nothing is left to strip.
 function ledgerStem(){
-  const base = String(fileName || "").replace(/\.json$/i, "").replace(/-\d{8}-\d{6}$/, "");
+  let base = String(fileName || "").replace(/\.json$/i, "");
+  for (;;) {
+    const before = base;
+    base = base.replace(/-\d{8}-\d{6}$/, "")   // a stamp we wrote
+               .replace(/\s*\(\d+\)\s*$/, "")  // a duplicate marker the browser wrote
+               .trim();
+    if (base === before) break;
+  }
   return base || ("ledger-" + (activeYear || "unfiled"));
 }
 function saveFileName(dt){ return ledgerStem() + "-" + stamp(dt) + ".json"; }
