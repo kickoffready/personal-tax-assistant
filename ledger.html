@@ -514,7 +514,10 @@ function derive(){
     }
     const ongoingDeduction = opening * POOL_ONGOING;
     const deduction = ongoingDeduction + firstYearDeduction;
-    pool[fy] = { opening, additions, deduction, closing: Math.max(0, opening + additions - deduction) };
+    // Kept apart because only one half can ever be attributed: the first-year 18.75% is
+    // per asset, the ongoing 37.5% is charged on a balance no single asset owns.
+    pool[fy] = { opening, additions, deduction, firstYear: firstYearDeduction, ongoing: ongoingDeduction,
+                 closing: Math.max(0, opening + additions - deduction) };
   }
 
   // ---- retention: keep_until per asset
@@ -649,8 +652,21 @@ function buildLodgment(fy){
       depRows.reduce((s,r) => s + r.deductible, 0));
   }
   // low-value pool
+  // D6 shows categories for the year an asset enters the pool, because that share is its
+  // own: cost x work use x 18.75%. It cannot show them for anything after that. From the
+  // second year the deduction is 37.5% of a balance every asset has been folded into, and
+  // splitting that by category would be an invention — so it stays one honest line.
   const p = derived.pool[fy];
-  if (p && p.deduction > 0) add(out.deductions, "D6", "pool deduction", p.deduction);
+  if (p && p.deduction > 0) {
+    for (const a of M.assets) {
+      if (a.treatment !== "pool" || fyOf(a.purchase_date) !== fy) continue;
+      const share = num(a.cost) * wpFrac(workPctFor(a, fy)) * POOL_FIRST_YEAR;
+      if (share <= 0.005) continue;
+      add(out.deductions, "D6", categoryOf(a), share, (a.description || a.supplier || a.asset_id) + " (first year)");
+    }
+    if (p.ongoing > 0.005)
+      add(out.deductions, "D6", "pool balance brought forward", p.ongoing);
+  }
 
   // income
   for (const i of M.income) {

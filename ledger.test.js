@@ -510,6 +510,47 @@ t('its total still shows', ho.indexOf('lodge-cat-amt">$600.00')>-1, 'shown','sho
 
 t('the label total is unchanged by any of this', near(LL.total,1100), LL.total.toFixed(2),'1100.00');
 
+console.log('\\n— D6 shows categories only for the share that is actually attributable');
+setModel({years:[{year:'2025-26'},{year:'2026-27'},{year:'2027-28'}], assets:[
+  {asset_id:'P-1',description:'dock',supplier:'Dell',purchase_date:'2025-11-24',cost:310.32,
+   treatment:'pool',work_pct:{'2025-26':100},category:'Peripherals'},
+  {asset_id:'P-2',description:'monitor',supplier:'Dell',purchase_date:'2025-12-01',cost:480,
+   treatment:'pool',work_pct:{'2025-26':100},category:'Peripherals'},
+  {asset_id:'P-3',description:'chair',supplier:'Officeworks',purchase_date:'2026-09-01',cost:600,
+   treatment:'pool',work_pct:{'2026-27':100},category:'Furniture'}]});
+activeYear='2025-26'; const DP = derive();
+
+const d6y1 = DP.lodgment['2025-26'].deductions.D6, d6p1 = DP.pool['2025-26'];
+t('year one splits by category', d6y1.lines.length===1 && d6y1.lines[0].name==='Peripherals',
+  d6y1.lines.map(l=>l.name).join(','), 'Peripherals');
+t('each asset keeps its own share underneath', d6y1.lines[0].parts.length===2, d6y1.lines[0].parts.length, 2);
+t("the dock's share is its own 18.75%", near(d6y1.lines[0].parts.find(x=>x.name.indexOf('dock')>-1).amount, 58.19),
+  d6y1.lines[0].parts.find(x=>x.name.indexOf('dock')>-1).amount.toFixed(2), '58.19');
+t('and the lines still sum to the pool deduction', near(d6y1.total, d6p1.deduction),
+  d6y1.total.toFixed(2), d6p1.deduction.toFixed(2));
+t('nothing is carried forward in year one', near(d6p1.ongoing,0), d6p1.ongoing.toFixed(2),'0.00');
+
+const d6y2 = DP.lodgment['2026-27'].deductions.D6, d6p2 = DP.pool['2026-27'];
+t('year two shows the new asset by category',
+  !!d6y2.lines.find(l=>l.name==='Furniture'), d6y2.lines.map(l=>l.name).join(','), 'includes Furniture');
+t('and the rest as one unattributed line',
+  !!d6y2.lines.find(l=>l.name==='pool balance brought forward'), 'present','present');
+t('the carried-forward line is the 37.5% charge',
+  near(d6y2.lines.find(l=>l.name==='pool balance brought forward').amount, d6p2.ongoing),
+  d6y2.lines.find(l=>l.name==='pool balance brought forward').amount.toFixed(2), d6p2.ongoing.toFixed(2));
+t('the two halves still reconcile', near(d6y2.total, d6p2.deduction), d6y2.total.toFixed(2), d6p2.deduction.toFixed(2));
+t('the old assets are NOT re-attributed in year two',
+  !d6y2.lines.find(l=>l.name==='Peripherals'), 'absent','absent');
+
+const d6y3 = DP.lodgment['2027-28'].deductions.D6;
+t('a year with no additions is a single honest line',
+  d6y3.lines.length===1 && d6y3.lines[0].name==='pool balance brought forward',
+  d6y3.lines.map(l=>l.name).join(','), 'pool balance brought forward');
+
+M.assets.forEach(a => a.work_pct = {'2025-26':0,'2026-27':0});
+t('a 0% pool claims nothing and shows no D6 at all',
+  derive().lodgment['2025-26'].deductions.D6===undefined, 'no line','no line');
+
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
   purchase_date:'2026-01-01',cost:2000,treatment:'schedule',effective_life:2,method:'prime_cost',work_pct:{'2025-26':100}}]});
