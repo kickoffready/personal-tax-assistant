@@ -397,6 +397,33 @@ function knownCategories(kind){
   for (const [,c] of CATEGORY_HINTS[kind]) set.add(c);
   return [...set].sort();
 }
+// A category is a choice, not a calculation, so it gets a real dropdown. A datalist input
+// looks like a plain text box until you happen to click it — the options may as well not
+// exist. New categories are still reachable, but through a deliberate "+ new" rather than
+// by typing something slightly different from last time and creating a near-duplicate.
+function categorySelect(kind, current, handler, extra){
+  const list = knownCategories(kind).slice();
+  if (current && list.indexOf(current) === -1) list.push(current);
+  list.sort();
+  return `<select ${extra||""} onchange="${handler}">
+    <option value=""${!current ? " selected" : ""}>—</option>
+    ${list.map(c => `<option value="${esc(c)}"${c===current?" selected":""}>${esc(c)}</option>`).join("")}
+    <option value="__new">+ new category…</option>
+  </select>`;
+}
+function askCategory(){
+  const name = (prompt("New category name") || "").trim();
+  return name;
+}
+function chooseCategory(coll, id, value){
+  if (value === "__new") { const n = askCategory(); if (!n) { render(); return; } value = n; }
+  setField(coll, id, "category", value);
+}
+function chooseGroupCategory(key, value){
+  if (value === "__new") { const n = askCategory(); if (!n) { render(); return; } value = n; }
+  setGroupField(key, "category", value);
+}
+
 function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }
 
 function treatmentFor(cost){
@@ -946,13 +973,17 @@ function renderAssets(){
       <div class="fld"><label>Purchase date</label><input id="a-date" type="date" value="${todayISO()}"></div>
       <div class="fld"><label>Cost (incl)</label><input id="a-cost" class="n" type="number" step="0.01"></div>
       <div class="fld"><label>Work use %</label><input id="a-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
+      <div class="fld"><label>Category</label><select id="a-cat">
+        <option value="">suggest from description</option>
+        ${knownCategories("assets").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+      </select></div>
       <button class="primary" onclick="addAsset()">Add asset</button>
     </div>
 
     <div class="tw"><table>
       <thead><tr>
         <th>ID</th><th>Description</th><th>Purchased</th><th class="n">Cost</th>
-        <th>Treatment</th><th class="n">Life</th><th>Method</th><th class="n">Work %</th>
+        <th>Category</th><th>Treatment</th><th class="n">Life</th><th>Method</th><th class="n">Work %</th>
         <th class="n">Opening</th><th class="n">Decline</th><th class="n">Claim</th><th class="n">Closing</th>
         <th>Keep until</th><th></th>
       </tr></thead>
@@ -965,6 +996,7 @@ function renderAssets(){
           <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
+          <td>${categorySelect("assets", a.category || "", `chooseCategory('assets','${a.asset_id}',this.value)`)}</td>
           <td>${treatmentCell(a)}</td>
           <td class="n">${a.treatment==="schedule" ? `<input class="n" type="number" step="1" value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)">` : "—"}</td>
           <td>${a.treatment==="schedule" ? `<select onchange="setField('assets','${a.asset_id}','method',this.value)">
@@ -983,7 +1015,7 @@ function renderAssets(){
           <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
           <td><button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">del</button></td>
         </tr>${openAsset===a.asset_id ? assetDetail(a) : ""}`; }).join("")
-        : '<tr><td colspan="14" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
+        : '<tr><td colspan="15" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
       </tbody></table></div>
 
     <div class="note"><b>Treatment is set by cost</b>
@@ -1005,7 +1037,7 @@ function assetDetail(a){
   const balRow = dep.find(r => r.balancing);
   const computed = treatmentFor(a.cost);
   const overridden = a.treatment_locked && a.treatment !== computed;
-  return `<tr class="sub"><td colspan="14" style="padding:14px 16px">
+  return `<tr class="sub"><td colspan="15" style="padding:14px 16px">
     <div class="formrow" style="margin:0 0 10px">
       <div class="fld" style="min-width:300px"><label>Treatment — ${esc(money(num(a.cost)))} computes to “${esc(computed)}”</label>
         <div style="display:flex;gap:8px;align-items:center">
@@ -1020,10 +1052,6 @@ function assetDetail(a){
       </div>
     </div>
     <div class="formrow" style="margin:0">
-      <div class="fld"><label>Category</label>
-        <input value="${esc(a.category)}" list="assetcatlist" placeholder="${esc(suggestCategory(a.supplier, a.description, "assets") || "how this reports")}"
-          onchange="setField('assets','${a.asset_id}','category',this.value)"></div>
-      <datalist id="assetcatlist">${knownCategories("assets").map(c => `<option value="${esc(c)}">`).join("")}</datalist>
       ${f("serial","Serial / IMEI")}
       ${f("supplier","Supplier")}
       ${f("evidence","Evidence path")}
@@ -1112,9 +1140,12 @@ function renderExpenses(){
       <div class="fld"><label>Supplier</label><input id="e-sup"></div>
       <div class="fld"><label>Amount</label><input id="e-amt" class="n" type="number" step="0.01"></div>
       <div class="fld"><label>Work use %</label><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
-      <div class="fld"><label>Category</label><input id="e-cat" list="catlist" placeholder="suggested from the supplier"></div>
+      <div class="fld"><label>Category</label><select id="e-cat">
+        <option value="">suggest from supplier</option>
+        ${knownCategories("expenses").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+      </select></div>
       <button class="primary" onclick="addExpense()">Add expense</button>
-      <datalist id="catlist">${knownCategories("expenses").map(c => `<option value="${esc(c)}">`).join("")}</datalist>
+
     </div>
 
     <div class="tw"><table>
@@ -1161,10 +1192,15 @@ function groupHTML(g){
         title="Work use % for every ${esc(g.key)} charge this year — set it once here."
         onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','work_pct',this.value)"></td>
     <td class="n"><b>${money(g.claimed)}</b></td>
-    <td><input value="${esc(g.cats.length===1 ? g.cats[0] : "")}" list="catlist"
-        placeholder="${g.cats.length>1 ? "mixed" : "ungrouped"}" style="min-width:130px"
-        title="Groups this supplier under a heading on the return. Applies to every ${esc(g.key)} charge this year."
-        onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','category',this.value)"></td>
+    <td>${g.cats.length > 1
+      ? `<select title="Charges in this group disagree — pick one to settle it."
+           onchange="chooseGroupCategory('${esc(g.key).replace(/'/g,"\\'")}',this.value)">
+           <option selected>mixed</option>
+           ${knownCategories("expenses").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+           <option value="__new">+ new category…</option></select>`
+      : categorySelect("expenses", g.cats[0] || "",
+          `chooseGroupCategory('${esc(g.key).replace(/'/g,"\\'")}',this.value)`,
+          `title="Groups this supplier under a heading on the return. Applies to every ${esc(g.key)} charge this year."`)}</td>
     <td><select onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','label',this.value)">
       ${mixedLabel ? '<option selected>mixed</option>' : ""}
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
@@ -1181,8 +1217,7 @@ function groupHTML(g){
       title="Changing this here still applies to every ${esc(e.supplier||g.key)} charge this year."
       onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
     <td class="n">${money(num(e.amount) * wpFrac(e.work_pct===undefined?100:e.work_pct))}</td>
-    <td><input value="${esc(e.category)}" list="catlist" placeholder="from supplier"
-      onchange="setField('expenses','${e.id}','category',this.value)"></td>
+    <td>${categorySelect("expenses", e.category || "", `chooseCategory('expenses','${e.id}',this.value)`)}</td>
     <td><select onchange="setField('expenses','${e.id}','label',this.value)">
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
@@ -1384,7 +1419,7 @@ function addAsset(){
     purchase_date: date, cost, treatment: treatmentFor(cost),
     effective_life: suggestLife(desc), method: "prime_cost",
     work_pct: { [fyOf(date)]: num($("#a-wp").value) || 100 }, status: "in_use",
-    category: suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" };
+    category: $("#a-cat").value.trim() || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" };
   M.assets.push(a);
   ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
   touch();

@@ -44,6 +44,9 @@ function boot(store = {}, refuseStorage = false) {
       removeItem: k => { delete store[k]; }
     },
     navigator: {}, alert: () => {}, confirm: () => true,
+    // Set PROMPT_REPLY from inside a test to answer the next prompt(); reading it off
+    // the context is what lets an engine test drive a dialog the page opens.
+    PROMPT_REPLY: "", prompt: () => ctx.PROMPT_REPLY,
     URL: { createObjectURL: () => "", revokeObjectURL(){} },
     Blob: function(){}, FileReader: function(){}
   };
@@ -443,6 +446,44 @@ t('it names the amount', mis[0].title.indexOf('310.32')>-1, mis[0].title, 'names
 t('it is high severity', mis[0].sev==='high', mis[0].sev, 'high');
 t('a $29 cable is not flagged', mis.filter(x=>x.title.indexOf('29.00')>-1).length===0, 0, 0);
 t('a service is never flagged', mis.filter(x=>x.title.indexOf('Optus')>-1).length===0, 0, 0);
+
+console.log('\\n— the category picker is a dropdown, and reaches both collections');
+setModel({years:[{year:'2025-26'}], expenses:[], assets:[]});
+const selE = categorySelect('expenses','Information services','noop()');
+t('it renders a select, not a text box', selE.indexOf('<select')===0 && selE.indexOf('<input')===-1,
+  selE.slice(0,7), '<select');
+t('the current value is selected', selE.indexOf('value="Information services" selected')>-1, 'selected','selected');
+t('an empty option exists for uncategorised', selE.indexOf('<option value="">')>-1, 'yes','yes');
+t('a new category is reachable', selE.indexOf('__new')>-1, 'yes','yes');
+t('the expense picker offers no asset categories', selE.indexOf('>Computers<')===-1, 'absent','absent');
+const selA = categorySelect('assets','Peripherals','noop()');
+t('the asset picker offers asset categories', selA.indexOf('>Computers<')>-1, 'present','present');
+t('and no service categories', selA.indexOf('>Information services<')===-1, 'absent','absent');
+const selCustom = categorySelect('expenses','Something I invented','noop()');
+t('a category not in the list is kept as an option',
+  selCustom.indexOf('value="Something I invented" selected')>-1, 'kept','kept');
+
+console.log('\\n— choosing "+ new category"');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'x',date:'2026-06-20',supplier:'Optus',description:'mobile',amount:300,work_pct:100,label:'D5'}]});
+activeYear='2025-26'; derive();
+PROMPT_REPLY = 'Telecommunications';
+chooseCategory('expenses','x','__new');
+t('the typed name is stored', M.expenses[0].category==='Telecommunications', M.expenses[0].category, 'Telecommunications');
+PROMPT_REPLY = '';
+chooseCategory('expenses','x','__new');
+t('cancelling leaves it alone', M.expenses[0].category==='Telecommunications', M.expenses[0].category, 'Telecommunications');
+chooseCategory('expenses','x','Information services');
+t('an ordinary choice still sets it', M.expenses[0].category==='Information services',
+  M.expenses[0].category, 'Information services');
+
+console.log('\\n— an asset carries a category on its own row');
+setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-1',description:'dock',supplier:'Dell',
+  purchase_date:'2025-11-24',cost:310.32,treatment:'pool',work_pct:{'2025-26':100}}]});
+activeYear='2025-26'; derive();
+chooseCategory('assets','A-1','Peripherals');
+t('set on the asset itself', M.assets[0].category==='Peripherals', M.assets[0].category, 'Peripherals');
+t('and it reaches the return', categoryOf(M.assets[0])==='Peripherals', categoryOf(M.assets[0]), 'Peripherals');
 
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
