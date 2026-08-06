@@ -76,6 +76,10 @@
   th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--rule); vertical-align:middle; }
   thead th { font-size:10px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); font-weight:600; white-space:nowrap; }
   tbody tr:last-child td { border-bottom:none; }
+  tr.grp > td { background:var(--surface-2); }
+  tr.grp.open > td { border-bottom-color:var(--accent); }
+  tr.grp-item > td { padding-left:22px; }
+  tr.grp-item > td:first-child { border-left:2px solid var(--accent); }
   tbody tr:hover { background:var(--surface-2); }
   td.n, th.n { text-align:right; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
   td.mono { font-family:var(--mono); font-size:12px; }
@@ -232,19 +236,38 @@ const POOL_FIRST_YEAR = 0.1875, POOL_ONGOING = 0.375;
 // ato.gov.au > deductions > assets costing more than $300
 const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
 const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
+const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part of the record
 
 /* ============================================================
    STATE — only what a human typed is persisted
    ============================================================ */
 
 function emptyModel() {
-  return { schema:1, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+  return { schema:2, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+}
+
+// schema 1 stored work use as a fraction (0.7). schema 2 stores it as a percentage (70),
+// because that is how it is written on a return and how people say it out loud. Old files
+// still load: convert once, on the way in.
+function migrate(m){
+  if (!m || (num(m.schema) || 1) >= 2) return m;
+  const up = v => num(v) * 100;
+  (m.expenses || []).forEach(e => { if (e.work_pct !== undefined) e.work_pct = up(e.work_pct); });
+  (m.assets || []).forEach(a => {
+    if (a.work_pct === undefined) return;
+    if (typeof a.work_pct === "object" && a.work_pct)
+      Object.keys(a.work_pct).forEach(k => a.work_pct[k] = up(a.work_pct[k]));
+    else a.work_pct = up(a.work_pct);
+  });
+  m.schema = 2;
+  return m;
 }
 let M = emptyModel();
 let derived = null;
 let activeYear = null;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
+let openGroups = {};    // supplier -> true when an expense group is expanded
 let fileName = null;
 let dirty = false;
 let recoveredAt = null;   // timestamp of a restored draft, null if none
@@ -298,7 +321,9 @@ function money(n){
   if (n === null || n === undefined || isNaN(n)) return "—";
   return (n<0?"-":"") + "$" + Math.abs(n).toLocaleString("en-AU",{minimumFractionDigits:2, maximumFractionDigits:2});
 }
-function pct(n){ return (num(n)*100).toFixed(0) + "%"; }
+function pct(n){ return (num(n)*100).toFixed(0) + "%"; }        // for rates held as fractions (0.32 -> "32%")
+function pctNum(n){ return num(n).toFixed(0) + "%"; }           // for work use, held as 0-100 (70 -> "70%")
+function wpFrac(n){ return num(n)/100; }                        // work use as a multiplier
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function uid(p){ return p + "-" + Math.random().toString(36).slice(2,8); }
 function nextAssetId(){
@@ -372,10 +397,10 @@ function derive(){
       // Disposing triggers a balancing adjustment: sale proceeds against the
       // remaining adjustable value. Positive is assessable, negative deductible.
       const disposedNow = a.disposal_date && fyOf(a.disposal_date) === fy;
-      const balancing = disposedNow ? (num(a.disposal_proceeds) - closing) * wp : 0;
+      const balancing = disposedNow ? (num(a.disposal_proceeds) - closing) * wpFrac(wp) : 0;
       dep.push({ asset_id:a.asset_id, description:a.description, year:fy,
         opening, days_held:days, decline, work_pct:wp,
-        deductible: decline * wp, closing, balancing, label:"D5" });
+        deductible: decline * wpFrac(wp), closing, balancing, label:"D5" });
     }
 
     // ---- low-value pool
@@ -385,7 +410,7 @@ function derive(){
     for (const a of M.assets) {
       if (a.treatment !== "pool") continue;
       if (fyOf(a.purchase_date) !== fy) continue;
-      const taxableCost = num(a.cost) * workPctFor(a, fy);
+      const taxableCost = num(a.cost) * wpFrac(workPctFor(a, fy));
       additions += taxableCost;
       firstYearDeduction += taxableCost * POOL_FIRST_YEAR;
     }
@@ -399,8 +424,18 @@ function derive(){
   for (const a of M.assets) {
     // "5 years from the date of your last claim for decline in value" — the last
     // year with an actual claim, not merely the last year the asset was held.
+    //
+    // Pooled and immediately-written-off assets produce no per-asset rows, so there is
+    // no "last claim" to run from. For a pooled asset the rule is its own: five years
+    // from the END OF THE INCOME YEAR the asset was allocated to the pool — which is
+    // not five years from the purchase, and not five years from the pool's last
+    // deduction either. The pool keeps deducting for a decade; the record obligation
+    // for the asset that went into it does not follow it that far.
     const rows = dep.filter(r => r.asset_id === a.asset_id && r.deductible > 0.005);
-    const lastClaim = rows.length ? iso(fyEnd(rows[rows.length-1].year)) : a.purchase_date;
+    const allocFY = fyOf(a.purchase_date);
+    const lastClaim = rows.length ? iso(fyEnd(rows[rows.length-1].year))
+                    : allocFY ? iso(fyEnd(allocFY))
+                    : a.purchase_date;
     const candidates = [addYears(lastClaim, 5)];
     if (a.disposal_date) candidates.push(addYears(a.disposal_date, 5));
     const yr = M.years.find(y => y.year === fyOf(a.purchase_date));
@@ -421,11 +456,26 @@ function prevFY(fy, years){ const i = years.indexOf(fy); return i > 0 ? years[i-
 function workPctFor(a, fy){
   if (a.work_pct && typeof a.work_pct === "object") {
     if (a.work_pct[fy] !== undefined) return num(a.work_pct[fy]);
-    const ks = Object.keys(a.work_pct).sort().filter(k => k <= fy);
-    if (ks.length) return num(a.work_pct[ks[ks.length-1]]);
-    return 1;
+    const keys = Object.keys(a.work_pct).sort();
+    const prior = keys.filter(k => k <= fy);
+    if (prior.length) return num(a.work_pct[prior[prior.length-1]]);
+    // Years before the first percentage was recorded: carry the earliest one back.
+    // Falling through to the default here silently claimed the asset at 100% —
+    // reachable by moving a purchase date to a year earlier than the one it was entered in.
+    if (keys.length) return num(a.work_pct[keys[0]]);
+    return 100;
   }
-  return a.work_pct === undefined ? 1 : num(a.work_pct);
+  return a.work_pct === undefined ? 100 : num(a.work_pct);
+}
+// Where a year's work-use percentage came from, for the input's tooltip.
+function workPctSource(a, fy){
+  if (!a.work_pct || typeof a.work_pct !== "object") return "applies to every year";
+  if (a.work_pct[fy] !== undefined) return "set for this year";
+  const keys = Object.keys(a.work_pct).sort();
+  const prior = keys.filter(k => k <= fy);
+  if (prior.length) return "carried forward from FY " + fyLabel(prior[prior.length-1]);
+  if (keys.length) return "carried back from FY " + fyLabel(keys[0]);
+  return "not set — assuming 100%";
 }
 
 /* ---- capital gains: losses first, discount last ---- */
@@ -459,14 +509,19 @@ function buildLodgment(fy){
   const add = (bucket, label, name, amount) => {
     if (!bucket[label]) bucket[label] = { total:0, lines:[] };
     bucket[label].total += amount;
-    bucket[label].lines.push({ name, amount });
+    // A return is filled in at section level, so the line a service occupies is the
+    // one that matters — not each individual charge. Twelve monthly bills belong on
+    // one line, summed, or the working papers stop resembling the form.
+    const existing = bucket[label].lines.find(l => l.name === name);
+    if (existing) { existing.amount += amount; existing.count = (existing.count || 1) + 1; }
+    else bucket[label].lines.push({ name, amount, count: 1 });
   };
 
-  // expenses
+  // expenses — grouped by the service they were paid to
   for (const e of M.expenses) {
     if (fyOf(e.date) !== fy) continue;
-    const claimed = num(e.amount) * (e.work_pct === undefined ? 1 : num(e.work_pct));
-    add(out.deductions, e.label || "D5", e.description || e.supplier || "expense", claimed);
+    const claimed = num(e.amount) * wpFrac(e.work_pct === undefined ? 100 : e.work_pct);
+    add(out.deductions, e.label || "D5", e.supplier || e.description || "expense", claimed);
   }
   // working from home
   const y = M.years.find(x => x.year === fy);
@@ -479,7 +534,7 @@ function buildLodgment(fy){
   for (const a of M.assets) {
     if (a.treatment !== "immediate") continue;
     if (fyOf(a.purchase_date) !== fy) continue;
-    add(out.deductions, "D5", a.description + " (immediate, ≤$300)", num(a.cost) * workPctFor(a, fy));
+    add(out.deductions, "D5", a.description + " (immediate, ≤$300)", num(a.cost) * wpFrac(workPctFor(a, fy)));
   }
   // scheduled depreciation
   const depRows = derived.dep.filter(r => r.year === fy);
@@ -635,6 +690,17 @@ function setField(coll, id, field, value){
     row[field] = num(value);
   else row[field] = value;
   if (field === "treatment") row.treatment_locked = true;
+  // One service, one percentage. The apportionment is a property of the service —
+  // your phone is not 70% work in July and 40% in August — so setting it on any
+  // charge sets it on every charge from that supplier in the same year. Twelve
+  // identical monthly bills should never be twelve separate decisions.
+  if (coll === "expenses" && field === "work_pct" && row.supplier) {
+    const fy = fyOf(row.date), pctv = num(value);
+    M.expenses.forEach(e => {
+      if (e === row || !e.supplier) return;
+      if (e.supplier === row.supplier && fyOf(e.date) === fy) e.work_pct = pctv;
+    });
+  }
   touch();
 }
 function removeRow(coll, id){
@@ -705,7 +771,7 @@ function renderLodgment(){
         <button class="tiny" onclick="event.stopPropagation();copyVal(${bucket.total.toFixed(2)})">copy</button>
       </div>
       <div class="lodge-body"><ul>
-        ${bucket.lines.map(l => `<li><span>${esc(l.name)}</span><span>${money(l.amount)}</span></li>`).join("")}
+        ${bucket.lines.map(l => `<li><span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span><span>${money(l.amount)}</span></li>`).join("")}
       </ul></div>
     </div>`;
 
@@ -761,7 +827,7 @@ function renderAssets(){
       <div class="fld"><label>Supplier</label><input id="a-sup"></div>
       <div class="fld"><label>Purchase date</label><input id="a-date" type="date" value="${todayISO()}"></div>
       <div class="fld"><label>Cost (incl)</label><input id="a-cost" class="n" type="number" step="0.01"></div>
-      <div class="fld"><label>Work use</label><input id="a-wp" class="n" type="number" step="0.05" value="1"></div>
+      <div class="fld"><label>Work use %</label><input id="a-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
       <button class="primary" onclick="addAsset()">Add asset</button>
     </div>
 
@@ -781,17 +847,20 @@ function renderAssets(){
           <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
-          <td><select onchange="setField('assets','${a.asset_id}','treatment',this.value)">
-            ${["immediate","pool","schedule"].map(t => `<option value="${t}"${a.treatment===t?" selected":""}>${t}</option>`).join("")}
-          </select></td>
+          <td>${treatmentCell(a)}</td>
           <td class="n">${a.treatment==="schedule" ? `<input class="n" type="number" step="1" value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)">` : "—"}</td>
           <td>${a.treatment==="schedule" ? `<select onchange="setField('assets','${a.asset_id}','method',this.value)">
             <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>prime cost</option>
             <option value="diminishing"${a.method==="diminishing"?" selected":""}>diminishing</option></select>` : "—"}</td>
-          <td class="n"><input class="n" type="number" step="0.05" value="${workPctFor(a,activeYear)}" onchange="setField('assets','${a.asset_id}','work_pct_year',this.value)"></td>
+          <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${workPctFor(a,activeYear)}"
+            title="Work use for FY ${fyLabel(activeYear)} — ${esc(workPctSource(a,activeYear))}"
+            onchange="setField('assets','${a.asset_id}','work_pct_year',this.value)"></td>
           <td class="n">${dr ? money(dr.opening) : "—"}</td>
           <td class="n">${dr ? money(dr.decline) : (pooled ? '<span class="pill pool">pooled</span>' : "—")}</td>
-          <td class="n">${dr ? money(dr.deductible) : (imm ? money(num(a.cost)*workPctFor(a,activeYear)) : "—")}</td>
+          <td class="n">${dr ? money(dr.deductible)
+            : imm ? money(num(a.cost)*wpFrac(workPctFor(a,activeYear)))
+            : pooled ? poolClaimCell(a)
+            : "—"}</td>
           <td class="n">${dr ? money(dr.closing) : "—"}</td>
           <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
           <td><button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">del</button></td>
@@ -801,7 +870,13 @@ function renderAssets(){
 
     <div class="note"><b>Treatment is set by cost</b>
       $300 or less → immediate deduction (D5) · $301–999 → low-value pool (D6) · $1,000 or more → individual schedule (D5).
-      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.</div>`;
+      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.</div>
+    ${derived.pool[activeYear] && derived.pool[activeYear].deduction > 0 ? `<div class="note aside">
+      <b>Pooled assets claim at D6, not on their own row</b>
+      The pool is one deduction: <b>${money(derived.pool[activeYear].deduction)}</b> this year, on a closing balance of
+      ${money(derived.pool[activeYear].closing)}. First year in the pool is 18.75% of what you add (shown per asset above,
+      marked *), every year after is 37.5% of the whole balance — which by then belongs to no single asset. Find the total
+      on the Lodgment tab under D6.</div>` : ""}`;
 }
 
 function assetDetail(a){
@@ -810,7 +885,22 @@ function assetDetail(a){
       onchange="setField('assets','${a.asset_id}','${k}',this.value)"></div>`;
   const dep = derived.dep.filter(r => r.asset_id === a.asset_id);
   const balRow = dep.find(r => r.balancing);
+  const computed = treatmentFor(a.cost);
+  const overridden = a.treatment_locked && a.treatment !== computed;
   return `<tr class="sub"><td colspan="14" style="padding:14px 16px">
+    <div class="formrow" style="margin:0 0 10px">
+      <div class="fld" style="min-width:300px"><label>Treatment — ${esc(money(num(a.cost)))} computes to “${esc(computed)}”</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select onchange="setTreatment('${a.asset_id}',this.value)">
+            ${["immediate","pool","schedule"].map(t => `<option value="${t}"${(a.treatment||computed)===t?" selected":""}>${t}${t===computed?" (computed)":""}</option>`).join("")}
+          </select>
+          ${overridden ? `<button class="tiny" onclick="resetTreatment('${a.asset_id}')">reset to computed</button>` : ""}
+        </div>
+        <span class="sub" style="font-size:12px">${overridden
+          ? "Set by hand — it will no longer follow the cost."
+          : "Only override for a real election: a $301–999 asset may be depreciated instead of pooled. Pooling does not reverse."}</span>
+      </div>
+    </div>
     <div class="formrow" style="margin:0">
       ${f("serial","Serial / IMEI")}
       ${f("supplier","Supplier")}
@@ -832,7 +922,7 @@ function assetDetail(a){
     ${dep.length ? `<div class="tw" style="margin:12px 0 0"><table>
       <thead><tr><th>Year</th><th class="n">Opening</th><th class="n">Days</th><th class="n">Decline</th><th class="n">Work %</th><th class="n">Claimed</th><th class="n">Closing</th></tr></thead>
       <tbody>${dep.map(r=>`<tr><td>${fyLabel(r.year)}</td><td class="n">${money(r.opening)}</td>
-        <td class="n">${r.days_held}</td><td class="n">${money(r.decline)}</td><td class="n">${pct(r.work_pct)}</td>
+        <td class="n">${r.days_held}</td><td class="n">${money(r.decline)}</td><td class="n">${pctNum(r.work_pct)}</td>
         <td class="n">${money(r.deductible)}</td><td class="n">${money(r.closing)}</td></tr>`).join("")}</tbody>
     </table></div>` : ""}
     <p class="sub" style="margin:10px 0 0;font-size:12.5px">Name the evidence file after the asset ID — the link then survives a folder reorganisation, and works from either direction.</p>
@@ -840,39 +930,147 @@ function assetDetail(a){
 }
 function toggleAsset(id){ openAsset = openAsset === id ? null : id; render(); }
 
+// Treatment follows from cost, so it is shown, not chosen. Presenting it as a dropdown
+// invited a decision the thresholds have already made, and a wrong pick here silently
+// changes the deduction. The one real election — pooling a $301–999 asset rather than
+// depreciating it — still exists, but it lives in the detail panel where choosing it is
+// deliberate. Change the cost and an un-overridden treatment follows along.
+const TREATMENT_RULE = {
+  immediate: "cost $300 or less → immediate deduction at D5",
+  pool:      "cost $301–999 → low-value pool at D6",
+  schedule:  "cost $1,000 or more → depreciated over its effective life at D5"
+};
+function treatmentCell(a){
+  const computed = treatmentFor(a.cost);
+  const overridden = a.treatment_locked && a.treatment !== computed;
+  const cls = a.treatment === "schedule" ? "sched" : a.treatment === "pool" ? "pool" : "imm";
+  const why = overridden
+    ? `Overridden. ${money(num(a.cost))} computes to "${computed}" (${TREATMENT_RULE[computed]}). Open the row to reset it.`
+    : `Computed from cost: ${TREATMENT_RULE[a.treatment] || "—"}. Change the cost and this follows.`;
+  return `<span class="pill ${cls}" title="${esc(why)}">${esc(a.treatment || computed)}</span>`
+       + (overridden ? ` <span class="pill" title="${esc(why)}">set by hand</span>` : "");
+}
+function setTreatment(id, value){
+  const a = M.assets.find(x => x.asset_id === id); if (!a) return;
+  a.treatment = value;
+  a.treatment_locked = value !== treatmentFor(a.cost);
+  touch();
+}
+function resetTreatment(id){
+  const a = M.assets.find(x => x.asset_id === id); if (!a) return;
+  delete a.treatment_locked;
+  a.treatment = treatmentFor(a.cost);
+  touch();
+}
+
+// A pooled asset has no claim of its own. The pool is deducted as one amount at D6 —
+// 18.75% of what goes in during its first year, then 37.5% of the running balance,
+// which by then belongs to no single asset. Show the contribution where it exists and
+// say where the money went where it does not, because "—" reads as "nothing claimed".
+function poolClaimCell(a){
+  const p = derived.pool[activeYear];
+  const total = p ? money(p.deduction) : money(0);
+  if (fyOf(a.purchase_date) === activeYear) {
+    const share = num(a.cost) * wpFrac(workPctFor(a, activeYear)) * POOL_FIRST_YEAR;
+    return `<span title="Its first-year share: ${money(share)} of the ${total} pool deduction, claimed at D6 — not on this row.">${money(share)}*</span>`;
+  }
+  return `<span class="pill pool" title="Claimed at D6. From the second year the pool is deducted at 37.5% of the whole balance, so no part of it belongs to one asset. Pool deduction this year: ${total}.">in pool</span>`;
+}
+
 function renderExpenses(){
   const rows = M.expenses.filter(e => fyOf(e.date) === activeYear)
     .sort((a,b) => (a.date||"").localeCompare(b.date||""));
   $("#v-expenses").innerHTML = `
     <h2>Expenses — FY ${fyLabel(activeYear)}</h2>
-    <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum.</p>
+    <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum. Work use is a property of the <em>service</em>, not the charge: set it on any row and every charge from that supplier this year follows.</p>
 
     <div class="formrow">
       <div class="fld"><label>Date</label><input id="e-date" type="date" value="${todayISO()}"></div>
       <div class="fld"><label>Description</label><input id="e-desc"></div>
       <div class="fld"><label>Supplier</label><input id="e-sup"></div>
       <div class="fld"><label>Amount</label><input id="e-amt" class="n" type="number" step="0.01"></div>
-      <div class="fld"><label>Work use</label><input id="e-wp" class="n" type="number" step="0.05" value="1"></div>
+      <div class="fld"><label>Work use %</label><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
       <button class="primary" onclick="addExpense()">Add expense</button>
     </div>
 
     <div class="tw"><table>
-      <thead><tr><th>Date</th><th>Description</th><th>Supplier</th><th class="n">Amount</th>
+      <thead><tr><th>Service / date</th><th>Description</th><th class="n">Amount</th>
         <th class="n">Work %</th><th class="n">Claimed</th><th>Label</th><th>Basis</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(e => `<tr>
-        <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
-        <td><input value="${esc(e.description)}" onchange="setField('expenses','${e.id}','description',this.value)"></td>
-        <td><input value="${esc(e.supplier)}" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
-        <td class="n"><input class="n" type="number" step="0.01" value="${num(e.amount)}" onchange="setField('expenses','${e.id}','amount',this.value)"></td>
-        <td class="n"><input class="n" type="number" step="0.05" value="${e.work_pct===undefined?1:num(e.work_pct)}" onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
-        <td class="n">${money(num(e.amount) * (e.work_pct===undefined?1:num(e.work_pct)))}</td>
-        <td><select onchange="setField('expenses','${e.id}','label',this.value)">
-          ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
-        </select></td>
-        <td><input value="${esc(e.basis)}" placeholder="why, and how the % was reached" onchange="setField('expenses','${e.id}','basis',this.value)"></td>
-        <td><button class="tiny danger" onclick="removeRow('expenses','${e.id}')">del</button></td>
-      </tr>`).join("") : '<tr><td colspan="9" class="empty">No expenses recorded for this year.</td></tr>'}
+      <tbody>${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
+        : '<tr><td colspan="8" class="empty">No expenses recorded for this year.</td></tr>'}
       </tbody></table></div>`;
+}
+
+// The register keeps one row per charge — that is what substantiates a claim. What
+// gets grouped is the view of it, so the screen matches the shape of the form.
+function groupExpenses(rows){
+  const by = {};
+  for (const e of rows) {
+    const key = (e.supplier || e.description || "unattributed").trim();
+    (by[key] = by[key] || []).push(e);
+  }
+  return Object.keys(by).sort().map(key => {
+    const items = by[key];
+    const amount = items.reduce((s,e) => s + num(e.amount), 0);
+    const claimed = items.reduce((s,e) => s + num(e.amount)*wpFrac(e.work_pct===undefined?100:e.work_pct), 0);
+    const pcts = [...new Set(items.map(e => e.work_pct===undefined?100:num(e.work_pct)))];
+    const labels = [...new Set(items.map(e => e.label || "D5"))];
+    return { key, items, amount, claimed, pcts, labels,
+             from: items[0].date, to: items[items.length-1].date };
+  });
+}
+
+function groupHTML(g){
+  const open = !!openGroups[g.key];
+  const one = g.items.length === 1;
+  const pct = g.pcts.length === 1 ? g.pcts[0] : "";
+  const mixedPct = g.pcts.length > 1, mixedLabel = g.labels.length > 1;
+  const head = `<tr class="grp${open?" open":""}">
+    <td><button class="tiny" onclick="toggleGroup('${esc(g.key).replace(/'/g,"\\'")}')"
+        title="${one ? "1 charge" : g.items.length + " charges, " + g.from + " to " + g.to}">${open?"▾":"▸"} ${esc(g.key)}</button>
+      ${one ? "" : `<span class="sub" style="font-size:12px"> × ${g.items.length}</span>`}</td>
+    <td class="sub" style="font-size:13px">${esc(one ? (g.items[0].description||"") : g.from + " – " + g.to)}</td>
+    <td class="n"><b>${money(g.amount)}</b></td>
+    <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${pct}"
+        placeholder="${mixedPct ? "mixed" : ""}"
+        title="Work use % for every ${esc(g.key)} charge this year — set it once here."
+        onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','work_pct',this.value)"></td>
+    <td class="n"><b>${money(g.claimed)}</b></td>
+    <td><select onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','label',this.value)">
+      ${mixedLabel ? '<option selected>mixed</option>' : ""}
+      ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
+    </select></td>
+    <td class="sub" style="font-size:12.5px">${esc((g.items[0].basis||"").slice(0,60))}</td>
+    <td></td></tr>`;
+  if (!open) return head;
+  return head + g.items.map(e => `<tr class="grp-item">
+    <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
+    <td><input value="${esc(e.description)}" placeholder="description" onchange="setField('expenses','${e.id}','description',this.value)">
+      <input value="${esc(e.supplier)}" placeholder="supplier" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
+    <td class="n"><input class="n" type="number" step="0.01" value="${num(e.amount)}" onchange="setField('expenses','${e.id}','amount',this.value)"></td>
+    <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${e.work_pct===undefined?100:num(e.work_pct)}"
+      title="Changing this here still applies to every ${esc(e.supplier||g.key)} charge this year."
+      onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
+    <td class="n">${money(num(e.amount) * wpFrac(e.work_pct===undefined?100:e.work_pct))}</td>
+    <td><select onchange="setField('expenses','${e.id}','label',this.value)">
+      ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
+    </select></td>
+    <td><input value="${esc(e.basis)}" placeholder="why, and how the % was reached" onchange="setField('expenses','${e.id}','basis',this.value)"></td>
+    <td><button class="tiny danger" onclick="removeRow('expenses','${e.id}')">del</button></td>
+  </tr>`).join("");
+}
+
+function toggleGroup(key){ openGroups[key] = !openGroups[key]; render(); }
+
+// Editing at the group header writes through to every charge behind it.
+function setGroupField(key, field, value){
+  const fy = activeYear;
+  M.expenses.forEach(e => {
+    if (fyOf(e.date) !== fy) return;
+    if (((e.supplier || e.description || "unattributed").trim()) !== key) return;
+    e[field] = field === "work_pct" ? num(value) : value;
+  });
+  touch();
 }
 
 function renderIncome(){
@@ -1046,7 +1244,7 @@ function addAsset(){
   const a = { asset_id: nextAssetId(), description: desc, supplier: $("#a-sup").value.trim(),
     purchase_date: date, cost, treatment: treatmentFor(cost),
     effective_life: suggestLife(desc), method: "prime_cost",
-    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 1 }, status: "in_use", basis: "" };
+    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 100 }, status: "in_use", basis: "" };
   M.assets.push(a);
   ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
   touch();
@@ -1056,7 +1254,7 @@ function addExpense(){
   const amt = num($("#e-amt").value);
   if (!amt) { alert("An amount is needed."); return; }
   M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
-    supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 1,
+    supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 100,
     label: suggestLabel(sup, desc), basis: "" });
   ["#e-desc","#e-sup","#e-amt"].forEach(s => $(s).value = "");
   touch();
@@ -1102,9 +1300,26 @@ function copyVal(v){
    IO — the file is the record
    ============================================================ */
 
+// Every save is a new file, stamped to the second in local time. Reusing one name
+// makes the browser hand you "ledger (2).json", which sorts wrongly, hides which copy
+// is current, and quietly turns the download folder into a guessing game. Sortable
+// stamp, no collisions, and the newest is always last alphabetically.
+function stamp(dt){
+  const x = dt || new Date(), p = n => String(n).padStart(2,"0");
+  return "" + x.getFullYear() + p(x.getMonth()+1) + p(x.getDate())
+       + "-" + p(x.getHours()) + p(x.getMinutes()) + p(x.getSeconds());
+}
+// The stem survives a round trip: loading ledger-2025-26-20260806-193000.json and
+// saving again gives ledger-2025-26-<new stamp>.json, not a stack of stamps.
+function ledgerStem(){
+  const base = String(fileName || "").replace(/\.json$/i, "").replace(/-\d{8}-\d{6}$/, "");
+  return base || ("ledger-" + (activeYear || "unfiled"));
+}
+function saveFileName(dt){ return ledgerStem() + "-" + stamp(dt) + ".json"; }
+
 function saveFile(){
   const blob = new Blob([JSON.stringify(M, null, 2)], { type:"application/json" });
-  const name = fileName || ("ledger-" + (activeYear || "") + ".json");
+  const name = saveFileName();
   download(blob, name);
   fileName = name; dirty = false; recoveredAt = null;
   localStorage.removeItem(AUTOSAVE_KEY);
@@ -1122,7 +1337,7 @@ function loadFile(file){
     try {
       const parsed = JSON.parse(r.result);
       if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
-      M = Object.assign(emptyModel(), parsed);
+      M = migrate(Object.assign(emptyModel(), parsed));
       ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
       fileName = file.name; dirty = false; activeYear = null; recoveredAt = null;
       localStorage.removeItem(AUTOSAVE_KEY);
@@ -1147,7 +1362,7 @@ function exportCSV(which){
     depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
       ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
     expenses: [["date","description","supplier","amount","work_pct","claimed","label","basis"],
-      ...M.expenses.map(e => [e.date,e.description,e.supplier,e.amount,e.work_pct,(num(e.amount)*(e.work_pct===undefined?1:num(e.work_pct))).toFixed(2),e.label,e.basis])],
+      ...M.expenses.map(e => [e.date,e.description,e.supplier,e.amount,e.work_pct,(num(e.amount)*wpFrac(e.work_pct===undefined?100:e.work_pct)).toFixed(2),e.label,e.basis])],
     income: [["date","type","holding","franked","unfranked","credit","gross_foreign","fx_rate","tax_withheld_aud","acquired","proceeds","cost_base","gross_aud"],
       ...M.income.map(i => [i.date,i.type,i.holding,i.franked,i.unfranked,i.credit,i.gross_foreign,i.fx_rate,i.tax_withheld_aud,i.acquired,i.proceeds,i.cost_base,i.gross_aud])],
     lodgment: (() => {
@@ -1205,7 +1420,7 @@ function loadAuto(){
     if (!raw) return false;
     const s = JSON.parse(raw);
     if (!s || !s.model) return false;
-    M = Object.assign(emptyModel(), s.model);
+    M = migrate(Object.assign(emptyModel(), s.model));
     fileName = s.fileName || null; dirty = true;
     recoveredAt = s.at || null;
     return true;
@@ -1216,19 +1431,40 @@ function loadAuto(){
    WIRING
    ============================================================ */
 
+// Which tab and year you were on is not part of the record — it is where you were
+// standing. Kept separately from the autosave so restoring it never resurrects data.
+function showView(v){
+  if (!v || !document.getElementById("v-" + v)) return;
+  activeView = v;
+  [...$("#tabs").children].forEach(x => x.classList.toggle("on", x.dataset.v === v));
+  document.querySelectorAll(".view").forEach(el => el.classList.toggle("on", el.id === "v-" + v));
+}
+function saveUI(){
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ view: activeView, year: activeYear })); } catch(e){}
+}
+function restoreUI(){
+  try {
+    const s = JSON.parse(localStorage.getItem(UI_KEY) || "null");
+    if (!s) return;
+    if (s.year && derived && derived.years.includes(s.year)) activeYear = s.year;
+    if (s.view) showView(s.view);
+  } catch(e){}
+}
+
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-v]"); if (!b) return;
-  activeView = b.dataset.v;
-  [...$("#tabs").children].forEach(x => x.classList.toggle("on", x === b));
-  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + activeView));
+  showView(b.dataset.v);
+  saveUI();
 });
-$("#yearpick").addEventListener("change", e => { activeYear = e.target.value; render(); });
+$("#yearpick").addEventListener("change", e => { activeYear = e.target.value; saveUI(); render(); });
 $("#btnLoad").addEventListener("click", () => $("#fileInput").click());
 $("#btnSave").addEventListener("click", saveFile);
 $("#fileInput").addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 loadAuto();
+render();
+restoreUI();
 render();
 </script>
 </body>

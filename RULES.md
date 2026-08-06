@@ -26,12 +26,16 @@ together, and a test is there to stop you moving only one.
 
 | Rule | Where | What it does |
 | --- | --- | --- |
+| Work-use unit | `workPctFor()` / `wpFrac()` | Stored and entered as a **percentage 0–100**, never a fraction. `wpFrac()` converts where the arithmetic needs a multiplier. Schema 1 files stored fractions; `migrate()` multiplies by 100 on load and bumps to schema 2. Note `WFH_FIXED_RATE` (0.70) is **70c per hour**, not a percentage — it must not be converted. |
+| Work use before it was recorded | `workPctFor()` | A percentage set in a later year applies backwards to earlier years the asset was held. Falling through to 100% silently claimed the full cost — reachable by moving a purchase date back a year. |
+| One service, one percentage | `setField()` / `setGroupField()` | Setting work use on any expense applies it to every charge from the same supplier in that year. Apportionment is a property of the service, not the charge. |
 | Treatment from cost | `treatmentFor()` | ≤$300 immediate · $301–999 pool · ≥$1,000 individual schedule. The test is the item's **cost**, never the work-use share. |
 | Prime cost | `derive()` | `cost × (days held ÷ 365) × (100% ÷ effective life)` |
 | Diminishing value | `derive()` | `opening × (days held ÷ 365) × (200% ÷ effective life)` |
 | CGT ordering | `computeCGT()` | Current-year losses first, applied to gains **not** eligible for the discount before those that are; then carried-forward losses; then the 50% discount. Order matters: a dollar of loss offsets a full dollar of undiscounted gain but effectively only 50c of a discounted one. |
 | Balancing adjustment | `derive()` | On disposal, proceeds against remaining adjustable value. Above it is assessable at item 24, below it is deductible at D5. |
 | Retention | `derive()` | The later of: 5 years from lodgment, 5 years from the **last claim for decline in value**, and for a CGT asset 5 years after no CGT event can happen. |
+| Retention, pooled assets | `derive()` | Its own rule: 5 years from the **end of the income year the asset was allocated to the pool** — not from the purchase date, and not from the pool's last deduction. A pool keeps deducting for a decade; the record obligation for one asset in it does not. The same end-of-year base is used for immediate write-offs, which also produce no per-asset claim row. |
 | Pool is one-way | `runChecks()` | Once a pool exists, later low-cost assets must be pooled. Flagged, not silently corrected. |
 | Financial year | `fyOf()` | 1 July to 30 June. A 30 June transaction belongs to the year ending that day. |
 
