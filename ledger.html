@@ -127,6 +127,22 @@
   .lodge-body li:last-child { border-bottom:none; }
   .lodge-body li span:last-child { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
 
+  /* Second fold: a category shows its own total, and hides the suppliers behind it
+     until asked. The number you copy onto the return is the one on the head. */
+  .lodge-cat { border-bottom:1px dotted var(--rule); }
+  .lodge-cat:last-child { border-bottom:none; }
+  .lodge-cat-head { display:grid; grid-template-columns:14px 1fr auto; gap:10px; align-items:baseline;
+    padding:5px 0; font-size:13px; color:var(--muted); }
+  .lodge-cat-head.can-open { cursor:pointer; }
+  .lodge-cat-head.can-open:hover { color:var(--ink); }
+  .lodge-cat-caret { font-family:var(--mono); font-size:10px; color:var(--accent); }
+  .lodge-cat-amt { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lodge-cat-body { display:none; padding:2px 0 8px 24px; }
+  .lodge-cat.open .lodge-cat-body { display:block; }
+  .lodge-cat-body div { display:flex; justify-content:space-between; gap:14px; padding:3px 0;
+    font-size:12.5px; color:var(--faint); }
+  .lodge-cat-body div span:last-child { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+
   .empty { padding:26px; text-align:center; color:var(--faint); font-size:13.5px; }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; font-size:13.5px; }
   .kv dt { color:var(--muted); }
@@ -894,6 +910,27 @@ function renderTopbar(){
   const b = $("#warnBadge"); b.hidden = n === 0; b.textContent = n;
 }
 
+// A category is the line on the return, so its total is what shows. The suppliers behind
+// it are evidence, not the answer, and they stay folded until someone asks — which is the
+// difference between a page you read and a page you scroll past.
+function catHTML(l){
+  const parts = (l.parts || []).filter(p => p.name !== l.name);
+  const openable = parts.length > 1;
+  const toggle = openable
+    ? `onclick="this.parentNode.classList.toggle('open')" role="button" tabindex="0"
+       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.parentNode.classList.toggle('open')}"`
+    : "";
+  return `<div class="lodge-cat">
+    <div class="lodge-cat-head${openable ? " can-open" : ""}" ${toggle}>
+      <span class="lodge-cat-caret">${openable ? "▸" : ""}</span>
+      <span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span>
+      <span class="lodge-cat-amt">${money(l.amount)}</span>
+    </div>
+    ${openable ? `<div class="lodge-cat-body">${parts.map(p =>
+      `<div><span>${esc(p.name)}${p.count > 1 ? ` × ${p.count}` : ""}</span><span>${money(p.amount)}</span></div>`).join("")}</div>` : ""}
+  </div>`;
+}
+
 function renderLodgment(){
   const L = derived.lodgment[activeYear] || { deductions:{}, income:{} };
   const y = M.years.find(x => x.year === activeYear) || {};
@@ -912,12 +949,9 @@ function renderLodgment(){
         <span class="lodge-amt">${money(bucket.total)}</span>
         <button class="tiny" onclick="event.stopPropagation();copyVal(${bucket.total.toFixed(2)})">copy</button>
       </div>
-      <div class="lodge-body"><ul>
-        ${bucket.lines.map(l => `<li><span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span><span>${money(l.amount)}</span></li>`
-          + ((l.parts && l.parts.length > 1) ? l.parts.map(p =>
-              `<li style="padding-left:18px;color:var(--muted);font-size:13px"><span>${esc(p.name)}${p.count>1?` × ${p.count}`:""}</span><span>${money(p.amount)}</span></li>`).join("") : "")
-        ).join("")}
-      </ul></div>
+      <div class="lodge-body">
+        ${bucket.lines.map(l => catHTML(l)).join("")}
+      </div>
     </div>`;
 
   $("#v-lodgment").innerHTML = `

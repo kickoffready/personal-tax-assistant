@@ -485,6 +485,31 @@ chooseCategory('assets','A-1','Peripherals');
 t('set on the asset itself', M.assets[0].category==='Peripherals', M.assets[0].category, 'Peripherals');
 t('and it reaches the return', categoryOf(M.assets[0])==='Peripherals', categoryOf(M.assets[0]), 'Peripherals');
 
+console.log('\\n— lodgment folds: category totals out front, suppliers behind them');
+setModel({years:[{year:'2025-26',marginal:0.32}], expenses:[
+  {id:'a',date:'2026-06-01',supplier:'Optus',description:'mobile',amount:300,work_pct:100,label:'D5',category:'Information services'},
+  {id:'b',date:'2026-06-02',supplier:'Telstra',description:'internet',amount:200,work_pct:100,label:'D5',category:'Information services'},
+  {id:'c',date:'2026-06-03',supplier:'Union',description:'fees',amount:600,work_pct:100,label:'D5',category:'Professional memberships'}]});
+activeYear='2025-26';
+const LL = derive().lodgment['2025-26'].deductions.D5;
+const many = LL.lines.find(l=>l.name==='Information services');
+const one  = LL.lines.find(l=>l.name==='Professional memberships');
+
+const hm = catHTML(many);
+t('the category total is on the head', hm.indexOf('lodge-cat-amt">$500.00')>-1, 'shown','shown');
+t('a category with several suppliers can fold', hm.indexOf('can-open')>-1, 'foldable','foldable');
+t('it has a caret to say so', hm.indexOf('▸')>-1, 'caret','caret');
+t('the suppliers are in the markup', hm.indexOf('Optus')>-1 && hm.indexOf('Telstra')>-1, 'both','both');
+t('but inside the folded body', hm.indexOf('lodge-cat-body')>-1 &&
+  hm.indexOf('lodge-cat-body') < hm.indexOf('Optus'), 'behind the fold','behind the fold');
+
+const ho = catHTML(one);
+t('a single-supplier category does not pretend to fold', ho.indexOf('can-open')===-1, 'plain','plain');
+t('and carries no empty body', ho.indexOf('lodge-cat-body')===-1, 'none','none');
+t('its total still shows', ho.indexOf('lodge-cat-amt">$600.00')>-1, 'shown','shown');
+
+t('the label total is unchanged by any of this', near(LL.total,1100), LL.total.toFixed(2),'1100.00');
+
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
   purchase_date:'2026-01-01',cost:2000,treatment:'schedule',effective_life:2,method:'prime_cost',work_pct:{'2025-26':100}}]});
