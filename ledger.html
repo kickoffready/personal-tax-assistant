@@ -226,6 +226,7 @@ let M = emptyModel();
 let derived = null;
 let activeYear = null;
 let activeView = "lodgment";
+let openAsset = null;   // asset_id whose detail panel is expanded
 let fileName = null;
 let dirty = false;
 let recoveredAt = null;   // timestamp of a restored draft, null if none
@@ -341,9 +342,13 @@ function derive(){
       const closing = opening - decline;
       assetState[a.asset_id] = closing;
       const wp = workPctFor(a, fy);
+      // Disposing triggers a balancing adjustment: sale proceeds against the
+      // remaining adjustable value. Positive is assessable, negative deductible.
+      const disposedNow = a.disposal_date && fyOf(a.disposal_date) === fy;
+      const balancing = disposedNow ? (num(a.disposal_proceeds) - closing) * wp : 0;
       dep.push({ asset_id:a.asset_id, description:a.description, year:fy,
         opening, days_held:days, decline, work_pct:wp,
-        deductible: decline * wp, closing, label:"D5" });
+        deductible: decline * wp, closing, balancing, label:"D5" });
     }
 
     // ---- low-value pool
@@ -474,6 +479,24 @@ function buildLodgment(fy){
   const cg = derived.cgt[fy];
   if (cg && cg.netGain > 0) add(out.income, "I18", "net capital gain (after losses and discount)", cg.netGain);
 
+  // balancing adjustments on disposal
+  const bal = derived.dep.filter(r => r.year === fy && r.balancing);
+  const balDed = bal.filter(r => r.balancing < 0).reduce((s,r) => s - r.balancing, 0);
+  const balAss = bal.filter(r => r.balancing > 0).reduce((s,r) => s + r.balancing, 0);
+  if (balDed > 0.005) add(out.deductions, "D5", "balancing adjustment on disposal", balDed);
+  if (balAss > 0.005) add(out.income, "I24", "balancing adjustment on disposal", balAss);
+
+  // offsets — not deductions, and the two behave differently
+  out.offsets = [];
+  const fc = M.income.filter(i => fyOf(i.date) === fy && i.type === "dividend")
+    .reduce((s,i) => s + num(i.credit), 0);
+  if (fc > 0.005) out.offsets.push({ name:"Franking credits", amount:fc, refundable:true,
+    note:"Refundable — can be paid to you in cash even if it takes your tax below zero." });
+  const fito = M.income.filter(i => fyOf(i.date) === fy && i.type === "foreign")
+    .reduce((s,i) => s + num(i.tax_withheld_aud), 0);
+  if (fito > 0.005) out.offsets.push({ name:"Foreign income tax offset", amount:fito, refundable:false,
+    note:"Non-refundable — reduces tax payable to zero, no further. Claim it, or the withholding is simply lost." });
+
   return out;
 }
 function grossAud(i){
@@ -500,6 +523,18 @@ function runChecks(){
     if (a.work_pct && typeof a.work_pct === "object" && Object.keys(a.work_pct).length > 1 && !a.basis)
       push("med", a.asset_id + " work-use % changes between years with no basis recorded",
         "A percentage that moves needs a note explaining why, kept at the time.");
+  }
+
+  // low-value pool is a one-way door
+  const poolYears = M.assets.filter(a => a.treatment === "pool").map(a => fyOf(a.purchase_date)).filter(Boolean).sort();
+  if (poolYears.length) {
+    const first = poolYears[0];
+    const escapees = M.assets.filter(a => a.treatment === "schedule" &&
+      num(a.cost) < POOL_CEILING && num(a.cost) > IMMEDIATE_THRESHOLD &&
+      fyOf(a.purchase_date) >= first);
+    if (escapees.length)
+      push("high", escapees.length + " low-cost asset" + (escapees.length>1?"s are":" is") + " scheduled individually after a pool was opened",
+        "Once you allocate anything to a low-value pool, every later asset under $1,000 must be pooled too. The choice does not reverse: " + escapees.map(a=>a.asset_id).join(", ") + ".");
   }
 
   // fixed rate double-dip
@@ -631,8 +666,10 @@ function renderLodgment(){
   const rate = num(y.marginal) || 0.32;
 
   const rowHTML = (label, name, bucket) => `
-    <div class="lodge-row" onclick="this.classList.toggle('open')">
-      <div class="lodge-head">
+    <div class="lodge-row">
+      <div class="lodge-head" role="button" tabindex="0"
+           onclick="this.parentNode.classList.toggle('open')"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.parentNode.classList.toggle('open')}">
         <span class="lodge-lbl">${label.replace(/^I/,"")}</span>
         <span class="lodge-name">${esc(name)}</span>
         <span class="lodge-amt">${money(bucket.total)}</span>
@@ -657,6 +694,12 @@ function renderLodgment(){
     <h3>Income</h3>
     ${incKeys.length ? incKeys.map(k => rowHTML(k, INCOME_LABELS[k], L.income[k])).join("")
       : '<div class="panel empty">No investment income recorded for this year.</div>'}
+
+    ${(L.offsets && L.offsets.length) ? `<h3>Offsets</h3>
+      <p class="sub">Not deductions. These reduce tax directly rather than reducing income, and the two here behave differently.</p>
+      ${L.offsets.map(o => `<div class="panel" style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start">
+        <span><b>${esc(o.name)}</b><br><span style="color:var(--muted);font-size:13px">${esc(o.note)}</span></span>
+        <span class="lodge-amt" style="white-space:nowrap">${money(o.amount)}</span></div>`).join("")}` : ""}
 
     ${renderCGTsummary()}
     <div class="note aside"><b>Before you transcribe</b>
@@ -705,7 +748,7 @@ function renderAssets(){
         const imm = a.treatment === "immediate" && fyOf(a.purchase_date) === activeYear;
         const pooled = a.treatment === "pool";
         return `<tr>
-          <td class="mono">${esc(a.asset_id)}</td>
+          <td class="mono"><button class="tiny" onclick="toggleAsset('${a.asset_id}')" title="Show serial, evidence, basis and disposal">${openAsset===a.asset_id?"▾":"▸"} ${esc(a.asset_id)}</button></td>
           <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
@@ -723,7 +766,7 @@ function renderAssets(){
           <td class="n">${dr ? money(dr.closing) : "—"}</td>
           <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
           <td><button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">del</button></td>
-        </tr>`; }).join("")
+        </tr>${openAsset===a.asset_id ? assetDetail(a) : ""}`; }).join("")
         : '<tr><td colspan="14" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
       </tbody></table></div>
 
@@ -731,6 +774,42 @@ function renderAssets(){
       $300 or less → immediate deduction (D5) · $301–999 → low-value pool (D6) · $1,000 or more → individual schedule (D5).
       Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.</div>`;
 }
+
+function assetDetail(a){
+  const f = (k,label,type) => `<div class="fld"><label>${label}</label>
+    <input ${type?`type="${type}"`:""} value="${esc(a[k]==null?"":a[k])}"
+      onchange="setField('assets','${a.asset_id}','${k}',this.value)"></div>`;
+  const dep = derived.dep.filter(r => r.asset_id === a.asset_id);
+  const balRow = dep.find(r => r.balancing);
+  return `<tr class="sub"><td colspan="14" style="padding:14px 16px">
+    <div class="formrow" style="margin:0">
+      ${f("serial","Serial / IMEI")}
+      ${f("supplier","Supplier")}
+      ${f("evidence","Evidence path")}
+      <div class="fld" style="flex:1;min-width:220px"><label>Basis for the work-use %</label>
+        <input value="${esc(a.basis)}" placeholder="why this percentage, decided when"
+          onchange="setField('assets','${a.asset_id}','basis',this.value)"></div>
+    </div>
+    <div class="formrow" style="margin:10px 0 0">
+      <div class="fld"><label>Status</label><select onchange="setField('assets','${a.asset_id}','status',this.value)">
+        ${["in_use","disposed","scrapped"].map(s=>`<option value="${s}"${(a.status||"in_use")===s?" selected":""}>${s.replace("_"," ")}</option>`).join("")}
+      </select></div>
+      ${f("disposal_date","Disposal date","date")}
+      <div class="fld"><label>Proceeds</label><input class="n" type="number" step="0.01"
+        value="${num(a.disposal_proceeds)||""}" onchange="setField('assets','${a.asset_id}','disposal_proceeds',this.value)"></div>
+      ${balRow ? `<div class="fld"><label>Balancing adjustment</label>
+        <input class="n" readonly value="${money(Math.abs(balRow.balancing))} ${balRow.balancing>0?"assessable":"deductible"}"></div>` : ""}
+    </div>
+    ${dep.length ? `<div class="tw" style="margin:12px 0 0"><table>
+      <thead><tr><th>Year</th><th class="n">Opening</th><th class="n">Days</th><th class="n">Decline</th><th class="n">Work %</th><th class="n">Claimed</th><th class="n">Closing</th></tr></thead>
+      <tbody>${dep.map(r=>`<tr><td>${fyLabel(r.year)}</td><td class="n">${money(r.opening)}</td>
+        <td class="n">${r.days_held}</td><td class="n">${money(r.decline)}</td><td class="n">${pct(r.work_pct)}</td>
+        <td class="n">${money(r.deductible)}</td><td class="n">${money(r.closing)}</td></tr>`).join("")}</tbody>
+    </table></div>` : ""}
+    <p class="sub" style="margin:10px 0 0;font-size:12.5px">Name the evidence file after the asset ID — the link then survives a folder reorganisation, and works from either direction.</p>
+  </td></tr>`;
+}
+function toggleAsset(id){ openAsset = openAsset === id ? null : id; render(); }
 
 function renderExpenses(){
   const rows = M.expenses.filter(e => fyOf(e.date) === activeYear)
@@ -882,7 +961,11 @@ function renderData(){
       <div class="formrow" style="margin:0;background:none;border:none;padding:0">
         <button onclick="$('#fileInput').click()">Open ledger.json…</button>
         <button class="primary" onclick="saveFile()">Save ledger.json</button>
-        <button onclick="exportCSV()">Export CSV set</button>
+        <button onclick="exportCSV('assets')">CSV: assets</button>
+        <button onclick="exportCSV('depreciation')">depreciation</button>
+        <button onclick="exportCSV('expenses')">expenses</button>
+        <button onclick="exportCSV('income')">income</button>
+        <button onclick="exportCSV('lodgment')">lodgment</button>
         <button class="danger" onclick="resetAll()">Clear everything</button>
       </div>
       <dl class="kv" style="margin-top:14px">
@@ -1027,7 +1110,7 @@ function csv(rows){
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
   }).join(",")).join("\n");
 }
-function exportCSV(){
+function exportCSV(which){
   const fy = activeYear;
   const sets = {
     assets: [["asset_id","description","supplier","purchase_date","cost","treatment","effective_life","method","work_pct","status","disposal_date","keep_until"],
@@ -1052,10 +1135,11 @@ function exportCSV(){
       return rows;
     })()
   };
-  Object.entries(sets).forEach(([name, rows], idx) => {
-    setTimeout(() => download(new Blob([csv(rows)], { type:"text/csv" }),
-      "ledger-" + fy + "-" + name + ".csv"), idx * 250);
-  });
+  // One file per click. Browsers block rapid successive downloads, and a
+  // silently-blocked archive export is worse than no button at all.
+  const chosen = which && sets[which] ? { [which]: sets[which] } : sets;
+  Object.entries(chosen).forEach(([name, rows]) =>
+    download(new Blob([csv(rows)], { type:"text/csv" }), "ledger-" + fy + "-" + name + ".csv"));
 }
 function resetAll(){
   if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
