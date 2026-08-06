@@ -225,6 +225,20 @@ const LABEL_HINTS = [
 // Working from home, fixed rate. 2024-25 and 2025-26. Covers energy, phone,
 // internet, stationery and consumables — none of which may then be claimed
 // separately. ato.gov.au > deductions > working from home > fixed rate method
+// A category groups suppliers into the thing you are actually claiming, so a return
+// reads "Information services $381" rather than nine separate merchant names. Free text —
+// these only seed it. The label (D5, D6…) is the ATO's; the category is yours.
+const CATEGORY_HINTS = [
+  [/telstra|optus|vodafone|belong|amaysim|aussie ?broadband|internet|broadband|mobile|nbn|data ?plan/i, "Information services"],
+  [/dreamhost|godaddy|namecheap|crazy ?domains|cloudflare|aws|digitalocean|hosting|domain|dns/i, "Hosting and domains"],
+  [/adobe|atlassian|github|jetbrains|microsoft|google ?workspace|figma|notion|subscription|licence|license/i, "Software and subscriptions"],
+  [/icloud|dropbox|backblaze|storage|backup/i, "Storage and backup"],
+  [/officeworks|jb ?hi-?fi|apple ?store|dell|lenovo|laptop|monitor|keyboard|dock/i, "Computer equipment"],
+  [/union|association|institute|membership|professional ?fee/i, "Professional memberships"],
+  [/accountant|tax ?agent|bookkeep/i, "Tax affairs"],
+  [/course|training|conference|seminar|textbook/i, "Self-education"],
+  [/donation|foundation|charity|appeal/i, "Donations"]
+];
 const WFH_FIXED_RATE = 0.70;
 
 // Low-value pool. 18.75% in the year of allocation regardless of purchase date,
@@ -347,6 +361,24 @@ function suggestLabel(supplier, desc){
   for (const [re,lab] of LABEL_HINTS) if (re.test(hay)) return lab;
   return "D5";
 }
+function suggestCategory(supplier, desc){
+  const hay = (supplier||"") + " " + (desc||"");
+  const prior = M.expenses.find(e => e.supplier && supplier &&
+    e.supplier.toLowerCase() === supplier.toLowerCase() && e.category);
+  if (prior) return prior.category;                 // whatever you called it last time wins
+  for (const [re,cat] of CATEGORY_HINTS) if (re.test(hay)) return cat;
+  return "";
+}
+// What a row reports under. Falls back to the supplier, so a ledger with no categories
+// set behaves exactly as it did before.
+function knownCategories(){
+  const set = new Set();
+  for (const r of [...M.expenses, ...M.assets]) if (r.category) set.add(String(r.category).trim());
+  for (const [,c] of CATEGORY_HINTS) set.add(c);
+  return [...set].sort();
+}
+function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }
+
 function treatmentFor(cost){
   const c = num(cost);
   if (c <= IMMEDIATE_THRESHOLD) return "immediate";
@@ -509,22 +541,29 @@ function computeCGT(fy){
 /* ---- lodgment totals per label ---- */
 function buildLodgment(fy){
   const out = { deductions:{}, income:{} };
-  const add = (bucket, label, name, amount) => {
+  // A return is filled in at section level, so the line a category occupies is the one
+  // that matters — not each charge, and not each supplier. Twelve monthly bills roll into
+  // one supplier, and suppliers roll into the category you are actually claiming. `part`
+  // keeps the supplier breakdown underneath, because a total nobody can decompose is a
+  // total nobody can defend.
+  const add = (bucket, label, name, amount, part) => {
     if (!bucket[label]) bucket[label] = { total:0, lines:[] };
     bucket[label].total += amount;
-    // A return is filled in at section level, so the line a service occupies is the
-    // one that matters — not each individual charge. Twelve monthly bills belong on
-    // one line, summed, or the working papers stop resembling the form.
-    const existing = bucket[label].lines.find(l => l.name === name);
-    if (existing) { existing.amount += amount; existing.count = (existing.count || 1) + 1; }
-    else bucket[label].lines.push({ name, amount, count: 1 });
+    let line = bucket[label].lines.find(l => l.name === name);
+    if (line) { line.amount += amount; line.count = (line.count || 1) + 1; }
+    else { line = { name, amount, count: 1, parts: [] }; bucket[label].lines.push(line); }
+    if (part && part !== name) {
+      line.parts = line.parts || [];
+      const p = line.parts.find(x => x.name === part);
+      if (p) { p.amount += amount; p.count++; } else line.parts.push({ name: part, amount, count: 1 });
+    }
   };
 
   // expenses — grouped by the service they were paid to
   for (const e of M.expenses) {
     if (fyOf(e.date) !== fy) continue;
     const claimed = num(e.amount) * wpFrac(e.work_pct === undefined ? 100 : e.work_pct);
-    add(out.deductions, e.label || "D5", e.supplier || e.description || "expense", claimed);
+    add(out.deductions, e.label || "D5", categoryOf(e), claimed, e.supplier || e.description);
   }
   // working from home
   const y = M.years.find(x => x.year === fy);
@@ -537,7 +576,8 @@ function buildLodgment(fy){
   for (const a of M.assets) {
     if (a.treatment !== "immediate") continue;
     if (fyOf(a.purchase_date) !== fy) continue;
-    add(out.deductions, "D5", a.description + " (immediate, ≤$300)", num(a.cost) * wpFrac(workPctFor(a, fy)));
+    add(out.deductions, "D5", categoryOf(a), num(a.cost) * wpFrac(workPctFor(a, fy)),
+        (a.description || a.supplier || "asset") + " (immediate, ≤$300)");
   }
   // scheduled depreciation
   const depRows = derived.dep.filter(r => r.year === fy);
@@ -814,7 +854,10 @@ function renderLodgment(){
         <button class="tiny" onclick="event.stopPropagation();copyVal(${bucket.total.toFixed(2)})">copy</button>
       </div>
       <div class="lodge-body"><ul>
-        ${bucket.lines.map(l => `<li><span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span><span>${money(l.amount)}</span></li>`).join("")}
+        ${bucket.lines.map(l => `<li><span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span><span>${money(l.amount)}</span></li>`
+          + ((l.parts && l.parts.length > 1) ? l.parts.map(p =>
+              `<li style="padding-left:18px;color:var(--muted);font-size:13px"><span>${esc(p.name)}${p.count>1?` × ${p.count}`:""}</span><span>${money(p.amount)}</span></li>`).join("") : "")
+        ).join("")}
       </ul></div>
     </div>`;
 
@@ -1033,14 +1076,16 @@ function renderExpenses(){
       <div class="fld"><label>Supplier</label><input id="e-sup"></div>
       <div class="fld"><label>Amount</label><input id="e-amt" class="n" type="number" step="0.01"></div>
       <div class="fld"><label>Work use %</label><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
+      <div class="fld"><label>Category</label><input id="e-cat" list="catlist" placeholder="suggested from the supplier"></div>
       <button class="primary" onclick="addExpense()">Add expense</button>
+      <datalist id="catlist">${knownCategories().map(c => `<option value="${esc(c)}">`).join("")}</datalist>
     </div>
 
     <div class="tw"><table>
       <thead><tr><th>Service / date</th><th>Description</th><th class="n">Amount</th>
-        <th class="n">Work %</th><th class="n">Claimed</th><th>Label</th><th>Basis</th><th></th></tr></thead>
+        <th class="n">Work %</th><th class="n">Claimed</th><th>Category</th><th>Label</th><th>Basis</th><th></th></tr></thead>
       <tbody>${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
-        : '<tr><td colspan="8" class="empty">No expenses recorded for this year.</td></tr>'}
+        : '<tr><td colspan="9" class="empty">No expenses recorded for this year.</td></tr>'}
       </tbody></table></div>`;
 }
 
@@ -1058,7 +1103,8 @@ function groupExpenses(rows){
     const claimed = items.reduce((s,e) => s + num(e.amount)*wpFrac(e.work_pct===undefined?100:e.work_pct), 0);
     const pcts = [...new Set(items.map(e => e.work_pct===undefined?100:num(e.work_pct)))];
     const labels = [...new Set(items.map(e => e.label || "D5"))];
-    return { key, items, amount, claimed, pcts, labels,
+    const cats = [...new Set(items.map(e => (e.category||"").trim()).filter(Boolean))];
+    return { key, items, amount, claimed, pcts, labels, cats,
              from: items[0].date, to: items[items.length-1].date };
   });
 }
@@ -1079,6 +1125,10 @@ function groupHTML(g){
         title="Work use % for every ${esc(g.key)} charge this year — set it once here."
         onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','work_pct',this.value)"></td>
     <td class="n"><b>${money(g.claimed)}</b></td>
+    <td><input value="${esc(g.cats.length===1 ? g.cats[0] : "")}" list="catlist"
+        placeholder="${g.cats.length>1 ? "mixed" : "ungrouped"}" style="min-width:130px"
+        title="Groups this supplier under a heading on the return. Applies to every ${esc(g.key)} charge this year."
+        onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','category',this.value)"></td>
     <td><select onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','label',this.value)">
       ${mixedLabel ? '<option selected>mixed</option>' : ""}
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
@@ -1095,6 +1145,8 @@ function groupHTML(g){
       title="Changing this here still applies to every ${esc(e.supplier||g.key)} charge this year."
       onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
     <td class="n">${money(num(e.amount) * wpFrac(e.work_pct===undefined?100:e.work_pct))}</td>
+    <td><input value="${esc(e.category)}" list="catlist" placeholder="from supplier"
+      onchange="setField('expenses','${e.id}','category',this.value)"></td>
     <td><select onchange="setField('expenses','${e.id}','label',this.value)">
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
@@ -1306,8 +1358,9 @@ function addExpense(){
   if (!amt) { alert("An amount is needed."); return; }
   M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
     supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 100,
-    label: suggestLabel(sup, desc), basis: "" });
-  ["#e-desc","#e-sup","#e-amt"].forEach(s => $(s).value = "");
+    label: suggestLabel(sup, desc), category: $("#e-cat").value.trim() || suggestCategory(sup, desc),
+    basis: "" });
+  ["#e-desc","#e-sup","#e-amt","#e-cat"].forEach(s => $(s).value = "");
   touch();
 }
 function addIncome(){

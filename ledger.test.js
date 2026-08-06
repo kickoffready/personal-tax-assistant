@@ -357,6 +357,49 @@ t('a hand-entered row counts as its own source',
   derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length===1,
   derive().warnings.filter(x=>x.title.indexOf('sources in')>-1).length, 1);
 
+console.log('\\n— categories group suppliers into what you are actually claiming');
+t('a telco is an information service', suggestCategory('Optus','mobile')==='Information services',
+  suggestCategory('Optus','mobile'), 'Information services');
+t('a CDN is hosting', suggestCategory('Cloudflare Inc','DNS and CDN')==='Hosting and domains',
+  suggestCategory('Cloudflare Inc','DNS and CDN'), 'Hosting and domains');
+t('a cloud plan is storage', suggestCategory('Acme Cloud Plus','Cloud Plus storage')==='Storage and backup',
+  suggestCategory('Acme Cloud Plus','Cloud Plus storage'), 'Storage and backup');
+t('an unknown supplier gets none', suggestCategory('Some Shop','thing')==='',
+  suggestCategory('Some Shop','thing'), '(empty)');
+
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'b',date:'2026-06-20',supplier:'Optus',description:'mobile',amount:300,work_pct:100,label:'D5',category:'Information services'},
+  {id:'t',date:'2026-06-21',supplier:'Telstra',description:'internet',amount:200,work_pct:100,label:'D5',category:'Information services'},
+  {id:'c',date:'2026-06-27',supplier:'Cloudflare',description:'dns',amount:81,work_pct:100,label:'D5',category:'Hosting and domains'},
+  {id:'u',date:'2026-05-01',supplier:'Union',description:'fees',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26';
+let LC = derive().lodgment['2025-26'].deductions.D5;
+t('D5 reports one line per category', LC.lines.length===3, LC.lines.length, 3);
+const info = LC.lines.find(l=>l.name==='Information services');
+t('two telcos roll into one category line', near(info.amount,500), info.amount.toFixed(2), '500.00');
+t('the suppliers survive underneath', info.parts.length===2, info.parts.length, 2);
+t('and each one keeps its own subtotal',
+  near(info.parts.find(p=>p.name==='Optus').amount,300), info.parts.find(p=>p.name==='Optus').amount.toFixed(2),'300.00');
+t('a row with no category still reports under its supplier',
+  !!LC.lines.find(l=>l.name==='Union'), 'Union','Union');
+t('the section total is unchanged by grouping', near(LC.total,1181), LC.total.toFixed(2),'1181.00');
+
+console.log('\\n— setting a category applies to the whole service');
+setGroupField('Optus','category','Telecommunications');
+t('every charge from that supplier follows',
+  M.expenses.filter(e=>e.supplier==='Optus').every(e=>e.category==='Telecommunications'), 'all','all');
+t('and the return regroups accordingly',
+  !!derive().lodgment['2025-26'].deductions.D5.lines.find(l=>l.name==='Telecommunications'),
+  'regrouped','regrouped');
+
+console.log('\\n— an immediate asset reports under its category too');
+setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-C',description:'keyboard',supplier:'Officeworks',
+  purchase_date:'2025-08-01',cost:200,treatment:'immediate',work_pct:{'2025-26':100},category:'Computer equipment'}]});
+activeYear='2025-26';
+const LA = derive().lodgment['2025-26'].deductions.D5;
+t('the asset lands under its category', !!LA.lines.find(l=>l.name==='Computer equipment'),
+  LA.lines[0].name, 'Computer equipment');
+
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
   purchase_date:'2026-01-01',cost:2000,treatment:'schedule',effective_life:2,method:'prime_cost',work_pct:{'2025-26':100}}]});
