@@ -228,17 +228,35 @@ const LABEL_HINTS = [
 // A category groups suppliers into the thing you are actually claiming, so a return
 // reads "Information services $381" rather than nine separate merchant names. Free text —
 // these only seed it. The label (D5, D6…) is the ATO's; the category is yours.
-const CATEGORY_HINTS = [
-  [/telstra|optus|vodafone|belong|amaysim|aussie ?broadband|internet|broadband|mobile|nbn|data ?plan/i, "Information services"],
-  [/dreamhost|godaddy|namecheap|crazy ?domains|cloudflare|aws|digitalocean|hosting|domain|dns/i, "Hosting and domains"],
-  [/adobe|atlassian|github|jetbrains|microsoft|google ?workspace|figma|notion|subscription|licence|license/i, "Software and subscriptions"],
-  [/icloud|dropbox|backblaze|storage|backup/i, "Storage and backup"],
-  [/officeworks|jb ?hi-?fi|apple ?store|dell|lenovo|laptop|monitor|keyboard|dock/i, "Computer equipment"],
-  [/union|association|institute|membership|professional ?fee/i, "Professional memberships"],
-  [/accountant|tax ?agent|bookkeep/i, "Tax affairs"],
-  [/course|training|conference|seminar|textbook/i, "Self-education"],
-  [/donation|foundation|charity|appeal/i, "Donations"]
-];
+// Categories split by what the row IS, because the two never overlap. An expense is a
+// service consumed in a period; an asset is a thing that keeps working next year. A phone
+// bill is never Computer equipment, and a laptop is never an Information service — the
+// suggestion should not be able to cross that line, and neither should the picker.
+const CATEGORY_HINTS = {
+  expenses: [
+    [/telstra|optus|vodafone|belong|amaysim|aussie ?broadband|internet|broadband|mobile ?plan|nbn|data ?plan|sim/i, "Information services"],
+    [/dreamhost|godaddy|namecheap|crazy ?domains|cloudflare|aws|digitalocean|hosting|domain|dns/i, "Hosting and domains"],
+    [/adobe|atlassian|github|jetbrains|microsoft|google ?workspace|figma|notion|subscription|licence|license/i, "Software and subscriptions"],
+    [/icloud|dropbox|backblaze|storage|backup/i, "Storage and backup"],
+    [/union|association|institute|membership|professional ?fee/i, "Professional memberships"],
+    [/accountant|tax ?agent|bookkeep/i, "Tax affairs"],
+    [/course|training|conference|seminar|textbook/i, "Self-education"],
+    [/insurance|income ?protection/i, "Insurance"],
+    [/donation|foundation|charity|appeal/i, "Donations"],
+    [/repair|service|maintenance|consumable|toner|ink|stationery/i, "Repairs and consumables"]
+  ],
+  assets: [
+    [/laptop|macbook|notebook|desktop|imac|workstation|tower|pc\b/i, "Computers"],
+    [/phone|iphone|android|tablet|ipad/i, "Phones and tablets"],
+    [/monitor|display|screen|keyboard|mouse|dock|hub|printer|scanner|webcam|headset|drive/i, "Peripherals"],
+    [/desk|chair|bookshelf|cabinet|stand/i, "Furniture"],
+    [/camera|lens|microphone|lighting|tripod/i, "Recording equipment"],
+    [/tool|drill|ladder|safety/i, "Tools and safety equipment"]
+  ]
+};
+// Categories that describe a thing rather than a service. An expense wearing one of these
+// above the immediate-deduction threshold is usually an asset entered in the wrong place.
+const ASSET_SHAPED = /computers|phones|tablets|peripherals|furniture|equipment|tools|hardware/i;
 const WFH_FIXED_RATE = 0.70;
 
 // Low-value pool. 18.75% in the year of allocation regardless of purchase date,
@@ -361,20 +379,22 @@ function suggestLabel(supplier, desc){
   for (const [re,lab] of LABEL_HINTS) if (re.test(hay)) return lab;
   return "D5";
 }
-function suggestCategory(supplier, desc){
+function suggestCategory(supplier, desc, kind){
+  kind = kind === "assets" ? "assets" : "expenses";
   const hay = (supplier||"") + " " + (desc||"");
-  const prior = M.expenses.find(e => e.supplier && supplier &&
-    e.supplier.toLowerCase() === supplier.toLowerCase() && e.category);
+  const prior = (kind === "assets" ? M.assets : M.expenses).find(r => r.supplier && supplier &&
+    String(r.supplier).toLowerCase() === String(supplier).toLowerCase() && r.category);
   if (prior) return prior.category;                 // whatever you called it last time wins
-  for (const [re,cat] of CATEGORY_HINTS) if (re.test(hay)) return cat;
+  for (const [re,cat] of CATEGORY_HINTS[kind]) if (re.test(hay)) return cat;
   return "";
 }
 // What a row reports under. Falls back to the supplier, so a ledger with no categories
 // set behaves exactly as it did before.
-function knownCategories(){
+function knownCategories(kind){
+  kind = kind === "assets" ? "assets" : "expenses";
   const set = new Set();
-  for (const r of [...M.expenses, ...M.assets]) if (r.category) set.add(String(r.category).trim());
-  for (const [,c] of CATEGORY_HINTS) set.add(c);
+  for (const r of (kind === "assets" ? M.assets : M.expenses)) if (r.category) set.add(String(r.category).trim());
+  for (const [,c] of CATEGORY_HINTS[kind]) set.add(c);
   return [...set].sort();
 }
 function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }
@@ -666,6 +686,18 @@ function supplierIndex(){
 function runChecks(){
   const w = [];
   const push = (sev, title, detail) => w.push({ sev, title, detail });
+
+  // A thing entered as a service. The category is the tell: an expense described as a
+  // computer or a desk, above the amount that can simply be deducted, is usually an asset
+  // sitting in the wrong collection — where it claims its full cost this year instead of
+  // being depreciated or pooled.
+  for (const e of M.expenses) {
+    if (!ASSET_SHAPED.test(e.category || "")) continue;
+    if (num(e.amount) <= IMMEDIATE_THRESHOLD) continue;
+    push("high", money(num(e.amount)) + " for “" + (e.description || e.supplier || "an expense") + "” is categorised as " + e.category,
+      "That reads like a depreciating asset, but it is entered as an expense, so its whole cost is claimed this year. " +
+      "Anything above " + money(IMMEDIATE_THRESHOLD) + " that keeps working next year belongs in Assets, where the cost decides whether it is pooled or scheduled.");
+  }
 
   // The same spending arriving from two sources. PayPal is funded by a card, so every
   // PayPal charge also sits on that card's statement — under different merchant text, a
@@ -988,6 +1020,10 @@ function assetDetail(a){
       </div>
     </div>
     <div class="formrow" style="margin:0">
+      <div class="fld"><label>Category</label>
+        <input value="${esc(a.category)}" list="assetcatlist" placeholder="${esc(suggestCategory(a.supplier, a.description, "assets") || "how this reports")}"
+          onchange="setField('assets','${a.asset_id}','category',this.value)"></div>
+      <datalist id="assetcatlist">${knownCategories("assets").map(c => `<option value="${esc(c)}">`).join("")}</datalist>
       ${f("serial","Serial / IMEI")}
       ${f("supplier","Supplier")}
       ${f("evidence","Evidence path")}
@@ -1078,7 +1114,7 @@ function renderExpenses(){
       <div class="fld"><label>Work use %</label><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
       <div class="fld"><label>Category</label><input id="e-cat" list="catlist" placeholder="suggested from the supplier"></div>
       <button class="primary" onclick="addExpense()">Add expense</button>
-      <datalist id="catlist">${knownCategories().map(c => `<option value="${esc(c)}">`).join("")}</datalist>
+      <datalist id="catlist">${knownCategories("expenses").map(c => `<option value="${esc(c)}">`).join("")}</datalist>
     </div>
 
     <div class="tw"><table>
@@ -1347,7 +1383,8 @@ function addAsset(){
   const a = { asset_id: nextAssetId(), description: desc, supplier: $("#a-sup").value.trim(),
     purchase_date: date, cost, treatment: treatmentFor(cost),
     effective_life: suggestLife(desc), method: "prime_cost",
-    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 100 }, status: "in_use", basis: "" };
+    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 100 }, status: "in_use",
+    category: suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" };
   M.assets.push(a);
   ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
   touch();

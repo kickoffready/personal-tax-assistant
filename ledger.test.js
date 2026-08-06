@@ -360,6 +360,8 @@ t('a hand-entered row counts as its own source',
 console.log('\\n— categories group suppliers into what you are actually claiming');
 t('a telco is an information service', suggestCategory('Optus','mobile')==='Information services',
   suggestCategory('Optus','mobile'), 'Information services');
+t('the same words as an asset suggest nothing from the expense list',
+  suggestCategory('Optus','mobile','assets')==='', suggestCategory('Optus','mobile','assets'), '(empty)');
 t('a CDN is hosting', suggestCategory('Cloudflare Inc','DNS and CDN')==='Hosting and domains',
   suggestCategory('Cloudflare Inc','DNS and CDN'), 'Hosting and domains');
 t('a cloud plan is storage', suggestCategory('Acme Cloud Plus','Cloud Plus storage')==='Storage and backup',
@@ -399,6 +401,48 @@ activeYear='2025-26';
 const LA = derive().lodgment['2025-26'].deductions.D5;
 t('the asset lands under its category', !!LA.lines.find(l=>l.name==='Computer equipment'),
   LA.lines[0].name, 'Computer equipment');
+
+console.log('\\n— the taxonomy knows an asset from an expense');
+setModel({years:[{year:'2025-26'}], expenses:[], assets:[]});   // hints only, no prior rows
+t('a laptop is a computer, not a service', suggestCategory('Dell','14" laptop','assets')==='Computers',
+  suggestCategory('Dell','14" laptop','assets'), 'Computers');
+t('a dock is a peripheral', suggestCategory('Dell','usb dock','assets')==='Peripherals',
+  suggestCategory('Dell','usb dock','assets'), 'Peripherals');
+t('a desk is furniture', suggestCategory('Officeworks','standing desk','assets')==='Furniture',
+  suggestCategory('Officeworks','standing desk','assets'), 'Furniture');
+t('a laptop suggests nothing from the expense list',
+  suggestCategory('Dell','14" laptop','expenses')==='', suggestCategory('Dell','14" laptop','expenses'), '(empty)');
+setModel({years:[{year:'2025-26'}], expenses:[], assets:[]});
+t('the expense picker offers no hardware',
+  knownCategories('expenses').indexOf('Computers')===-1, 'absent','absent');
+t('the asset picker offers no services',
+  knownCategories('assets').indexOf('Information services')===-1, 'absent','absent');
+t('each picker offers its own', knownCategories('assets').indexOf('Computers')>-1 &&
+  knownCategories('expenses').indexOf('Information services')>-1, 'both','both');
+M.assets.push({asset_id:'A-P',description:'keyboard',supplier:'Officeworks',purchase_date:'2025-08-01',
+  cost:200,treatment:'immediate',work_pct:{'2025-26':100},category:'Peripherals'});
+t('what you called a supplier last time beats the hint',
+  suggestCategory('Officeworks','standing desk','assets')==='Peripherals',
+  suggestCategory('Officeworks','standing desk','assets'), 'Peripherals');
+t('and it does not leak across kinds',
+  suggestCategory('Officeworks','standing desk','expenses')==='',
+  suggestCategory('Officeworks','standing desk','expenses'), '(empty)');
+
+console.log('\\n— a thing entered as a service is caught');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'bad',date:'2025-11-24',supplier:'Dell',description:'dock',amount:310.32,work_pct:100,
+   label:'D5',category:'Peripherals'},
+  {id:'ok',date:'2025-11-24',supplier:'Officeworks',description:'cable',amount:29,work_pct:100,
+   label:'D5',category:'Peripherals'},
+  {id:'svc',date:'2026-06-20',supplier:'Optus',description:'mobile',amount:300,work_pct:100,
+   label:'D5',category:'Information services'}]});
+activeYear='2025-26';
+const mis = derive().warnings.filter(x=>x.title.indexOf('categorised as')>-1);
+t('an over-threshold hardware expense is flagged', mis.length===1, mis.length, 1);
+t('it names the amount', mis[0].title.indexOf('310.32')>-1, mis[0].title, 'names 310.32');
+t('it is high severity', mis[0].sev==='high', mis[0].sev, 'high');
+t('a $29 cable is not flagged', mis.filter(x=>x.title.indexOf('29.00')>-1).length===0, 0, 0);
+t('a service is never flagged', mis.filter(x=>x.title.indexOf('Optus')>-1).length===0, 0, 0);
 
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
