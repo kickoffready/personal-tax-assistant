@@ -220,6 +220,75 @@ t('two saves a second apart differ',
   saveFileName(new Date(2026,7,6,19,30,5))!==saveFileName(new Date(2026,7,6,19,30,6)), 'differ','differ');
 activeYear='2025-26'; fileName=null;
 
+console.log('\\n— importing merges, and refuses to claim the same row twice');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'kept',date:'2025-09-01',description:'union fees',supplier:'Union',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26'; derive();
+const FEED = {schema:2, years:[], assets:[
+    {asset_id:'A-2026-001',description:'Dell',supplier:'Dell',purchase_date:'2025-11-24',cost:310.32,
+     treatment:'pool',work_pct:{'2025-26':0},source:'paypal',source_ref:'TXN-DELL'}],
+  expenses:[
+    {id:'e-pp-optus',date:'2026-06-20',description:'internet',supplier:'Optus',amount:300,work_pct:0,
+     label:'D5',source:'paypal',source_ref:'TXN-OPTUS'},
+    {id:'e-pp-cf',date:'2026-06-27',description:'hosting',supplier:'Cloudflare',amount:81.33,work_pct:0,
+     label:'D5',source:'paypal',source_ref:'TXN-CF'}],
+  income:[]};
+
+let pl = planImport(JSON.parse(JSON.stringify(FEED)));
+t('plans every incoming row', pl.add.expenses.length===2 && pl.add.assets.length===1, 'e2/a1','e2/a1');
+applyImport(pl);
+t('existing work is kept', M.expenses.some(e=>e.id==='kept'), 'kept','kept');
+t('imported rows land beside it', M.expenses.length===3, M.expenses.length, 3);
+t('the asset comes through', M.assets.length===1 && M.assets[0].asset_id==='A-2026-001', M.assets.length, 1);
+t('imported at 0% it claims nothing yet', derive().lodgment['2025-26'].deductions.D6===undefined,
+  'no D6 line','no D6 line');
+M.assets[0].work_pct={'2025-26':100};
+t('once you set the work %, it reaches the return at D6',
+  near(derive().lodgment['2025-26'].deductions.D6.total, 58.19),
+  derive().lodgment['2025-26'].deductions.D6.total.toFixed(2), '58.19');
+M.assets[0].work_pct={'2025-26':0};
+
+let pl2 = planImport(JSON.parse(JSON.stringify(FEED)));
+t('a second import of the same file adds nothing', pl2.add.expenses.length===0 && pl2.add.assets.length===0,
+  pl2.add.expenses.length + '/' + pl2.add.assets.length, '0/0');
+t('and says what it skipped', pl2.skip.expenses.length===2 && pl2.skip.assets.length===1,
+  pl2.skip.expenses.length + '/' + pl2.skip.assets.length, '2/1');
+applyImport(pl2);
+t('re-importing does not double the claim', M.expenses.length===3, M.expenses.length, 3);
+
+console.log('\\n— identity without a source_ref, and id collisions');
+const NOREF = {schema:2, expenses:[
+  {id:'x',date:'2026-06-20',description:'internet',supplier:'Optus',amount:300,work_pct:0,label:'D5'}]};
+t('an identical charge with no source_ref is caught by its fields',
+  planImport(NOREF).add.expenses.length===0, planImport(NOREF).add.expenses.length, 0);
+const REVERSE = {schema:2, expenses:[
+  {id:'y',date:'2026-06-27',description:'hosting',supplier:'Cloudflare',amount:81.33,work_pct:0,label:'D5',
+   source:'other-tool',source_ref:'DIFFERENT-ID'}]};
+t('a different source_ref for the same charge is still caught by its fields',
+  planImport(REVERSE).add.expenses.length===0, planImport(REVERSE).add.expenses.length, 0);
+const DIFFERENT = {schema:2, expenses:[
+  {id:'kept',date:'2026-05-05',description:'a real second charge',supplier:'Optus',amount:11,work_pct:0,label:'D5'}]};
+let pl3 = planImport(DIFFERENT);
+t('a genuinely different charge is imported', pl3.add.expenses.length===1, pl3.add.expenses.length, 1);
+applyImport(pl3);
+t('a colliding id is re-keyed, not overwritten',
+  M.expenses.filter(e=>e.id==='kept').length===1 && M.expenses.length===4, M.expenses.length, 4);
+t('the original row survives the collision',
+  M.expenses.find(e=>e.id==='kept').amount===600, M.expenses.find(e=>e.id==='kept').amount, 600);
+
+console.log('\\n— an imported schema 1 file is converted on the way in');
+let pl4 = planImport({schema:1, expenses:[
+  {id:'old',date:'2026-03-03',description:'phone',supplier:'Telco',amount:100,work_pct:0.7,label:'D5'}]});
+t('work use converts to a percentage as it arrives', pl4.add.expenses[0].work_pct===70,
+  pl4.add.expenses[0].work_pct, 70);
+
+console.log('\\n— a year you have already set up is never overwritten');
+M.years[0].marginal = 0.47;
+applyImport(planImport({schema:2, years:[{year:'2025-26', marginal:0.32}, {year:'2027-28'}], expenses:[]}));
+t('your own year settings stand', M.years.find(y=>y.year==='2025-26').marginal===0.47,
+  M.years.find(y=>y.year==='2025-26').marginal, 0.47);
+t('a genuinely new year is added', M.years.some(y=>y.year==='2027-28'), 'added','added');
+
 console.log('\\n— part-year: bought 1 Jan, 2-year laptop');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
   purchase_date:'2026-01-01',cost:2000,treatment:'schedule',effective_life:2,method:'prime_cost',work_pct:{'2025-26':100}}]});

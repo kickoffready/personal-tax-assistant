@@ -149,8 +149,10 @@
     <span class="spacer"></span>
     <select class="yearpick" id="yearpick" aria-label="Income year"></select>
     <button id="btnLoad">Open…</button>
+    <button id="btnImport">Import…</button>
     <button class="primary" id="btnSave">Save ledger</button>
     <input type="file" id="fileInput" accept=".json,application/json" hidden>
+    <input type="file" id="importInput" accept=".json,application/json" hidden>
   </div>
 
   <div id="recovery"></div>
@@ -268,6 +270,7 @@ let activeYear = null;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
 let openGroups = {};    // supplier -> true when an expense group is expanded
+let lastImport = null;  // {at, plan} of the most recent import, for the Data tab
 let fileName = null;
 let dirty = false;
 let recoveredAt = null;   // timestamp of a restored draft, null if none
@@ -1187,6 +1190,7 @@ function renderData(){
     <div class="panel">
       <div class="formrow" style="margin:0;background:none;border:none;padding:0">
         <button onclick="$('#fileInput').click()">Open ledger.json…</button>
+        <button onclick="$('#importInput').click()">Import rows…</button>
         <button class="primary" onclick="saveFile()">Save ledger.json</button>
         <button onclick="exportCSV('assets')">CSV: assets</button>
         <button onclick="exportCSV('depreciation')">depreciation</button>
@@ -1203,7 +1207,14 @@ function renderData(){
           : "UNAVAILABLE — this browser refuses to store"}</dd>
         <dt>Years</dt><dd>${derived.years.length}</dd>
         <dt>Assets · expenses · income</dt><dd>${M.assets.length} · ${M.expenses.length} · ${M.income.length}</dd>
+        ${lastImport ? `<dt>Last import</dt><dd>${ageText(lastImport.at)} —
+          ${planSummary(lastImport.plan).total} row(s) added${planSummary(lastImport.plan).skipped
+            ? ", " + planSummary(lastImport.plan).skipped + " skipped as already present" : ""}</dd>` : ""}
       </dl>
+      <p class="sub" style="margin-top:10px"><b>Open</b> replaces this ledger with a file.
+      <b>Import</b> merges rows from one — for converted bank, broker or payment exports — keeping
+      what is already here and skipping anything it recognises as already imported. Importing the
+      same file twice does not claim it twice.</p>
     </div>
 
     <h3>Integrity ${w.length ? `— ${w.length} to review` : ""}</h3>
@@ -1331,6 +1342,120 @@ function download(blob, name){
   a.href = url; a.download = name; document.body.appendChild(a); a.click();
   document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/* ============================================================
+   IMPORT — merge rows from a generated file, never replace
+   ============================================================ */
+
+// Opening a ledger replaces everything. Importing must not: converters turn a bank or
+// broker export into rows, and those arrive alongside work already entered by hand.
+//
+// The whole risk is importing the same file twice and claiming it twice. Identity comes
+// from `source` + `source_ref` when a converter supplies them — a payment processor's
+// transaction ID is unique and stable. Without them, fall back to matching on the fields
+// that make a charge what it is. That fallback can be wrong in one direction only: two
+// genuinely separate but identical charges on one day get treated as one. Under-claiming
+// is recoverable, double-claiming is an amendment, so the fallback errs that way and the
+// preview names every row it skipped.
+// Every row carries BOTH identities, and a match on either is a duplicate. One converter
+// may emit a transaction ID where another does not, and the same charge must still be
+// recognised across the two — an identity that only works when both sides agree on the
+// format is no identity at all.
+function rowKeys(r, kind){
+  const keys = [];
+  if (r.source && r.source_ref) keys.push("s:" + r.source + "|" + r.source_ref);
+  if (kind === "assets")
+    keys.push("h:" + [r.purchase_date, (r.description||"").trim().toLowerCase(), num(r.cost).toFixed(2)].join("|"));
+  else if (kind === "income")
+    keys.push("h:" + [r.date, r.type, (r.holding||"").trim().toLowerCase(), num(r.gross_aud||r.amount||r.proceeds).toFixed(2)].join("|"));
+  else
+    keys.push("h:" + [r.date, (r.supplier||r.description||"").trim().toLowerCase(), num(r.amount).toFixed(2)].join("|"));
+  return keys;
+}
+
+function planImport(parsed){
+  const incoming = migrate(Object.assign(emptyModel(), parsed));
+  const plan = { add:{assets:[],expenses:[],income:[]}, skip:{assets:[],expenses:[],income:[]}, years:[] };
+  for (const kind of ["assets","expenses","income"]) {
+    const seen = new Set();
+    for (const r of M[kind]) for (const k of rowKeys(r, kind)) seen.add(k);
+    for (const r of (incoming[kind] || [])) {
+      const keys = rowKeys(r, kind);
+      if (keys.some(k => seen.has(k))) { plan.skip[kind].push(r); continue; }
+      keys.forEach(k => seen.add(k));    // also catches a file that repeats a row inside itself
+      plan.add[kind].push(r);
+    }
+  }
+  for (const y of (incoming.years || []))
+    if (!M.years.some(x => x.year === y.year)) plan.years.push(y);
+  return plan;
+}
+
+function applyImport(plan){
+  const takenIds = new Set([...M.expenses, ...M.income].map(r => r.id).filter(Boolean));
+  const takenAssets = new Set(M.assets.map(a => a.asset_id).filter(Boolean));
+  for (const kind of ["expenses","income"])
+    for (const r of plan.add[kind]) {
+      if (!r.id || takenIds.has(r.id)) r.id = uid(kind === "income" ? "i" : "e");
+      takenIds.add(r.id);
+      M[kind].push(r);
+    }
+  for (const a of plan.add.assets) {
+    if (!a.asset_id || takenAssets.has(a.asset_id)) {
+      const fy = fyOf(a.purchase_date) || activeYear || fyOf(todayISO());
+      const yr = parseInt(String(fy).slice(0,4),10) + 1;
+      let n = 1, id;
+      do { id = "A-" + yr + "-" + String(n++).padStart(3,"0"); } while (takenAssets.has(id));
+      a.asset_id = id;
+    }
+    takenAssets.add(a.asset_id);
+    if (!a.treatment) a.treatment = treatmentFor(a.cost);
+    M.assets.push(a);
+  }
+  for (const y of plan.years) M.years.push(y);   // never overwrites a year you have set up
+  lastImport = { at: Date.now(), plan };
+  touch();
+}
+
+function planSummary(plan){
+  const n = o => o.assets.length + o.expenses.length + o.income.length;
+  const money2 = rows => rows.reduce((s,r) => s + num(r.amount || r.cost || 0), 0);
+  const lines = [];
+  for (const kind of ["assets","expenses","income"]) {
+    if (plan.add[kind].length) lines.push(`  add ${plan.add[kind].length} ${kind} (${money(money2(plan.add[kind]))})`);
+    if (plan.skip[kind].length) lines.push(`  skip ${plan.skip[kind].length} ${kind} already present`);
+  }
+  if (plan.years.length) lines.push(`  add ${plan.years.length} year record(s)`);
+  return { total: n(plan.add), skipped: n(plan.skip), text: lines.join("\n") || "  nothing to add" };
+}
+
+function importFile(file){
+  const r = new FileReader();
+  r.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(r.result);
+      if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
+    } catch (err) {
+      alert("Could not read that file as a ledger.\n\n" + err.message + "\n\nNothing was changed.");
+      return;
+    }
+    const plan = planImport(parsed);
+    const s = planSummary(plan);
+    if (!s.total) {
+      alert("Nothing to import from " + file.name + ".\n\n" +
+            (s.skipped ? s.skipped + " row(s) are already in this ledger, so they were left alone."
+                       : "The file contained no rows.") +
+            "\n\nNothing was changed.");
+      return;
+    }
+    if (!confirm("Import from " + file.name + "?\n\n" + s.text +
+                 "\n\nExisting rows are kept. Nothing is overwritten." +
+                 "\nImported work use is whatever the file says — check it before you claim.")) return;
+    applyImport(plan);
+  };
+  r.readAsText(file);
+}
+
 function loadFile(file){
   const r = new FileReader();
   r.onload = () => {
@@ -1458,8 +1583,10 @@ $("#tabs").addEventListener("click", e => {
 });
 $("#yearpick").addEventListener("change", e => { activeYear = e.target.value; saveUI(); render(); });
 $("#btnLoad").addEventListener("click", () => $("#fileInput").click());
+$("#btnImport").addEventListener("click", () => $("#importInput").click());
 $("#btnSave").addEventListener("click", saveFile);
 $("#fileInput").addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
+$("#importInput").addEventListener("change", e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 loadAuto();
