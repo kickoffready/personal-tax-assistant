@@ -302,6 +302,13 @@ const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
 const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
 const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part of the record
 
+// An action label names the DESTINATION, never the number of rows it will affect. Labelling
+// by count produced "→ asset" on a one-charge group and "→ assets" on the next, which reads
+// as a fault in the table rather than as information — and the count is already there, in
+// the × beside the supplier and in the confirmation. Constants, so a column cannot go ragged
+// one row at a time; `ledger.test.js` asserts each action column holds exactly these.
+const TO_ASSETS = "→ Assets", TO_EXPENSES = "→ Expenses", DELETE_LABEL = "del";
+
 /* ============================================================
    STATE — only what a human typed is persisted
    ============================================================ */
@@ -413,13 +420,26 @@ function pct(n){ return (num(n)*100).toFixed(0) + "%"; }        // for rates hel
 function pctNum(n){ return num(n).toFixed(0) + "%"; }           // for work use, held as 0-100 (70 -> "70%")
 function wpFrac(n){ return num(n)/100; }                        // work use as a multiplier
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+// A string safe to sit inside a single-quoted JS literal inside an HTML attribute. The
+// order matters and was wrong here: escaping for HTML first turns ' into &#39;, so a later
+// replace(/'/g,…) matches nothing, and the browser hands the quote back to the parser when
+// it decodes the attribute. Escape for JS first, then for HTML. A supplier called
+// "Dan's Cafe" broke every handler on its group row.
+function jsStr(s){ return esc(String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/'/g, "\\'")); }
 function uid(p){ return p + "-" + Math.random().toString(36).slice(2,8); }
-function nextAssetId(){
-  const fy = activeYear || fyOf(todayISO()) || "2025-26";
-  const yr = parseInt(fy.slice(0,4),10)+1;
-  const n = M.assets.filter(a => (a.asset_id||"").startsWith("A-"+yr)).length + 1;
-  return "A-" + yr + "-" + String(n).padStart(3,"0");
+// An id in the asset's OWN financial year, skipping anything already taken. Counting the
+// existing rows is not enough — delete A-2026-001 and the count hands the next asset an id
+// that A-2026-002 is already using. Importing and moving both allocate through here, so a
+// row arriving by any route gets an id no other row holds.
+function allocateAssetId(fy, taken){
+  const held = taken || new Set(M.assets.map(a => a.asset_id).filter(Boolean));
+  const year = fy || activeYear || fyOf(todayISO()) || "2025-26";
+  const yr = parseInt(String(year).slice(0,4),10) + 1;
+  let n = 1, id;
+  do { id = "A-" + yr + "-" + String(n++).padStart(3,"0"); } while (held.has(id));
+  return id;
 }
+function nextAssetId(){ return allocateAssetId(activeYear); }
 function suggestLife(desc){
   for (const [re,life] of EFFECTIVE_LIVES) if (re.test(desc||"")) return life;
   return 3;
@@ -944,6 +964,189 @@ function removeRow(coll, id){
   touch();
 }
 
+/* ------------------------------------------------------------
+   MOVING A ROW BETWEEN EXPENSES AND ASSETS
+
+   A converter is told to send anything over $300 it cannot classify to Assets, because
+   a thing wrongly expensed claims its whole cost this year while a service wrongly
+   capitalised only under-claims. That rule is deliberately biased, so it is deliberately
+   wrong sometimes, and it is only defensible because this exists.
+
+   The move is not a filing change. A $310.32 dock claims $310.32 at D5 as an expense and
+   $58.19 at D6 as a pooled asset, so every confirmation states the number it changes.
+
+   Three things are re-derived rather than carried, because they mean different things on
+   either side: `treatment` (computed from cost), `category` (the two taxonomies are
+   disjoint by design) and the shape of `work_pct` (a bare number on an expense, an object
+   keyed by financial year on an asset). Everything that identifies or substantiates the
+   row — date, amount, supplier, issuer, source, source_ref, work use, basis — survives.
+   ------------------------------------------------------------ */
+
+// Warnings that apply to a move in either direction. Consequences, not permissions: the
+// ledger flags and lets you proceed, exactly as it does for the one-way pool.
+function moveWarnings(fy){
+  const out = [];
+  const y = M.years.find(x => x.year === fy);
+  if (y && y.noa_date)
+    out.push("FY " + fyLabel(fy) + " was assessed on " + y.noa_date +
+      ". Moving this row changes a return you have already lodged — amend by " + addYears(y.noa_date, 2) + ".");
+  return out;
+}
+
+// What the row will claim once it lands, so the confirmation can say so. Days-apportioned
+// depreciation is not guessed at here; a scheduled asset is described by its life instead.
+function claimPreview(cost, wp, fy, desc, life){
+  const t = treatmentFor(cost), full = num(cost) * wpFrac(wp);
+  if (t === "immediate") return "written off at once, claiming " + money(full) + " at D5 in FY " + fyLabel(fy) + ".";
+  if (t === "pool") return "allocated to the low-value pool, claiming " + money(full * POOL_FIRST_YEAR) +
+    " at D6 in FY " + fyLabel(fy) + ", then 37.5% of the balance each year after.";
+  return "depreciated at D5 over an effective life of " + (num(life) || suggestLife(desc)) +
+    " years from " + fyLabel(fy) + ", apportioned by the days it was held.";
+}
+
+// The two mappings, as plain functions of a row, so the subtle parts — the work_pct shape,
+// the disjoint category taxonomies, treatment following cost — are stated once and read as
+// a unit rather than being buried in the middle of a function that also asks a question and
+// edits two collections.
+function asAssetRow(e){
+  const fy = fyOf(e.date);
+  const cost = num(e.amount);
+  const desc = (e.description || e.supplier || "").trim();
+  return {
+    asset_id: allocateAssetId(fy),
+    description: desc, supplier: e.supplier || "",
+    purchase_date: e.date, cost,
+    treatment: treatmentFor(cost),
+    // Never omitted: workPctFor() reads a missing work_pct as 100%, the one default in
+    // the ledger that errs toward over-claiming.
+    work_pct: { [fy]: e.work_pct === undefined ? 100 : num(e.work_pct) },
+    // Re-derived, never carried: an expense category is not offered by the asset picker.
+    category: suggestCategory(e.supplier, desc, "assets"),
+    status: "in_use", basis: e.basis || "",
+    issuer: e.issuer || "", source: e.source || "", source_ref: e.source_ref || ""
+  };
+}
+function asExpenseRow(a){
+  const desc = (a.description || a.supplier || "").trim();
+  return {
+    id: uid("e"), date: a.purchase_date,
+    description: desc, supplier: a.supplier || "",
+    amount: num(a.cost),
+    work_pct: workPctFor(a, fyOf(a.purchase_date)),
+    label: suggestLabel(a.supplier, desc),
+    category: suggestCategory(a.supplier, desc, "expenses"),
+    basis: a.basis || "",
+    issuer: a.issuer || "", source: a.source || "", source_ref: a.source_ref || ""
+  };
+}
+
+function sendToAssets(id){
+  const e = M.expenses.find(r => r.id === id);
+  if (!e) return;
+  const fy = fyOf(e.date), cost = num(e.amount);
+  const wp = e.work_pct === undefined ? 100 : num(e.work_pct);
+  const desc = (e.description || e.supplier || "").trim();
+
+  const lines = ["Move “" + (desc || "this charge") + "” to Assets?", "",
+    "As an expense it claims " + money(cost * wpFrac(wp)) + " at " + (e.label || "D5") +
+      " in FY " + fyLabel(fy) + ".",
+    "As an asset costing " + money(cost) + " it will be " + claimPreview(cost, wp, fy, desc)];
+  const warn = moveWarnings(fy);
+  if (warn.length) lines.push("", warn.join("\n"));
+  if (!confirm(lines.join("\n"))) return;
+
+  M.expenses = M.expenses.filter(r => r.id !== id);
+  M.assets.push(asAssetRow(e));
+  touch();
+}
+
+// Every charge in a group, moved together. A group is one supplier's charges for the year,
+// and that shape says nothing about what they are: twelve $25 bills are a phone plan, but
+// two $29 cables bought the same afternoon are two things. The tool cannot tell those apart
+// and does not try — it suggests a classification at import and lets this correct it.
+// One row per item on the way in, because that is how the $300 test is applied.
+function sendGroupToAssets(key){
+  const items = M.expenses.filter(e => fyOf(e.date) === activeYear && groupKeyOf(e) === key);
+  if (!items.length) return;
+  if (items.length === 1) return sendToAssets(items[0].id);
+
+  const fy = activeYear;
+  const claimed = items.reduce((s,e) => s + num(e.amount) * wpFrac(e.work_pct === undefined ? 100 : e.work_pct), 0);
+  const by = {};
+  for (const e of items) { const t = treatmentFor(num(e.amount)); by[t] = (by[t] || 0) + 1; }
+  const shape = ["immediate","pool","schedule"].filter(t => by[t])
+    .map(t => by[t] + " " + ({ immediate:"written off at once", pool:"pooled", schedule:"on a schedule" })[t])
+    .join(", ");
+
+  const lines = ["Move all " + items.length + " “" + key + "” charges to Assets?", "",
+    "They become " + items.length + " asset rows — one per item, because the $300 test " +
+      "applies to each item, not to the receipt.",
+    "As expenses they claim " + money(claimed) + " in FY " + fyLabel(fy) + ".",
+    "As assets, on cost: " + shape + "."];
+  const warn = moveWarnings(fy);
+  if (warn.length) lines.push("", warn.join("\n"));
+  if (!confirm(lines.join("\n"))) return;
+
+  const ids = new Set(items.map(e => e.id));
+  M.expenses = M.expenses.filter(e => !ids.has(e.id));
+  for (const e of items) M.assets.push(asAssetRow(e));
+  delete openGroups[key];
+  touch();
+}
+
+// Deleting a whole group. Same reasoning as the move: the charges behind a header are
+// reachable without expanding it, and a group of one is the common case. The count and the
+// total go in the question, because "delete 12 rows" and "delete 1 row" are not the same
+// decision and the header alone does not say which you are making.
+function removeGroup(key){
+  const items = M.expenses.filter(e => fyOf(e.date) === activeYear && groupKeyOf(e) === key);
+  if (!items.length) return;
+  if (items.length === 1) return removeRow("expenses", items[0].id);
+
+  const gross = items.reduce((s,e) => s + num(e.amount), 0);
+  if (!confirm("Delete all " + items.length + " “" + key + "” charges in FY " + fyLabel(activeYear) + "?\n\n" +
+      money(gross) + " across " + items.length + " rows, from " + items[0].date +
+      " to " + items[items.length-1].date + ".\n\n" +
+      "The record is only as good as what stays in it.")) return;
+  const ids = new Set(items.map(e => e.id));
+  M.expenses = M.expenses.filter(e => !ids.has(e.id));
+  delete openGroups[key];
+  touch();
+}
+
+function sendToExpenses(assetId){
+  const a = M.assets.find(r => r.asset_id === assetId);
+  if (!a) return;
+  // A disposal computes a balancing adjustment, and possibly a CGT event, from fields that
+  // do not exist on an expense. There is nothing to move it to.
+  if ((a.status && a.status !== "in_use") || a.disposal_date || num(a.disposal_proceeds)) {
+    alert("“" + (a.description || a.asset_id) + "” has been disposed of.\n\n" +
+      "The balancing adjustment is calculated from the disposal, and an expense row cannot hold it. " +
+      "Clear the disposal first if this was entered by mistake.");
+    return;
+  }
+  const fy = fyOf(a.purchase_date), cost = num(a.cost), wp = workPctFor(a, fy);
+  const desc = (a.description || a.supplier || "").trim();
+
+  const lines = ["Move “" + (desc || a.asset_id) + "” to Expenses?", "",
+    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, desc, a.effective_life),
+    "As an expense it claims " + money(cost * wpFrac(wp)) + " in full, in FY " + fyLabel(fy) + "."];
+  if (a.treatment === "pool") {
+    // derive() rebuilds the pool from the original costs on every load, so taking an asset
+    // out does not just stop future deductions — it restates every year the pool has run.
+    const years = Object.keys(derived.pool || {}).filter(y => derived.pool[y].deduction > 0.005).sort();
+    if (years.length) lines.push("", "It is in the low-value pool. The pool is recalculated from scratch, " +
+      "so removing it changes the D6 deduction in " + years.map(fyLabel).join(", ") + ".");
+  }
+  const warn = moveWarnings(fy);
+  if (warn.length) lines.push("", warn.join("\n"));
+  if (!confirm(lines.join("\n"))) return;
+
+  M.assets = M.assets.filter(r => r.asset_id !== assetId);
+  M.expenses.push(asExpenseRow(a));
+  touch();
+}
+
 /* ============================================================
    RENDER
    ============================================================ */
@@ -1164,7 +1367,9 @@ function renderAssets(){
             : "—"}</td>
           <td class="n">${dr ? money(dr.closing) : "—"}</td>
           <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
-          <td><button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">del</button></td>
+          <td style="white-space:nowrap"><button class="tiny" onclick="sendToExpenses('${a.asset_id}')"
+              title="This is a service, not a thing — move it to Expenses, where it claims in full in the year it was paid.">${TO_EXPENSES}</button>
+            <button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">${DELETE_LABEL}</button></td>
         </tr>${openAsset===a.asset_id ? assetDetail(a) : ""}`; }).join("")
         : '<tr><td colspan="15" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
       </tbody></table></div>
@@ -1317,12 +1522,16 @@ function renderExpenses(){
       </tbody></table></div>`;
 }
 
+// What a charge groups under. Three places derive this and they must never disagree:
+// the view, the write-through editor, and the group move.
+function groupKeyOf(e){ return (e.supplier || e.description || "unattributed").trim(); }
+
 // The register keeps one row per charge — that is what substantiates a claim. What
 // gets grouped is the view of it, so the screen matches the shape of the form.
 function groupExpenses(rows){
   const by = {};
   for (const e of rows) {
-    const key = (e.supplier || e.description || "unattributed").trim();
+    const key = groupKeyOf(e);
     (by[key] = by[key] || []).push(e);
   }
   return Object.keys(by).sort().map(key => {
@@ -1343,7 +1552,7 @@ function groupHTML(g){
   const pct = g.pcts.length === 1 ? g.pcts[0] : "";
   const mixedPct = g.pcts.length > 1, mixedLabel = g.labels.length > 1;
   const head = `<tr class="grp${open?" open":""}">
-    <td><button class="tiny" onclick="toggleGroup('${esc(g.key).replace(/'/g,"\\'")}')"
+    <td><button class="tiny" onclick="toggleGroup('${jsStr(g.key)}')"
         title="${one ? "1 charge" : g.items.length + " charges, " + g.from + " to " + g.to}">${open?"▾":"▸"} ${esc(g.key)}</button>
       ${one ? "" : `<span class="sub" style="font-size:12px"> × ${g.items.length}</span>`}</td>
     <td class="sub" style="font-size:13px">${esc(one ? (g.items[0].description||"") : g.from + " – " + g.to)}</td>
@@ -1351,23 +1560,35 @@ function groupHTML(g){
     <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${pct}"
         placeholder="${mixedPct ? "mixed" : ""}"
         title="Work use % for every ${esc(g.key)} charge this year — set it once here."
-        onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','work_pct',this.value)"></td>
+        onchange="setGroupField('${jsStr(g.key)}','work_pct',this.value)"></td>
     <td class="n"><b>${money(g.claimed)}</b></td>
     <td>${g.cats.length > 1
       ? `<select title="Charges in this group disagree — pick one to settle it."
-           onchange="chooseGroupCategory('${esc(g.key).replace(/'/g,"\\'")}',this.value)">
+           onchange="chooseGroupCategory('${jsStr(g.key)}',this.value)">
            <option selected>mixed</option>
            ${knownCategories("expenses").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}
            <option value="__new">+ new category…</option></select>`
       : categorySelect("expenses", g.cats[0] || "",
-          `chooseGroupCategory('${esc(g.key).replace(/'/g,"\\'")}',this.value)`,
+          `chooseGroupCategory('${jsStr(g.key)}',this.value)`,
           `title="Groups this supplier under a heading on the return. Applies to every ${esc(g.key)} charge this year."`)}</td>
-    <td><select onchange="setGroupField('${esc(g.key).replace(/'/g,"\\'")}','label',this.value)">
+    <td><select onchange="setGroupField('${jsStr(g.key)}','label',this.value)">
       ${mixedLabel ? '<option selected>mixed</option>' : ""}
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
     <td class="sub" style="font-size:12.5px">${esc((g.items[0].basis||"").slice(0,60))}</td>
-    <td></td></tr>`;
+    ${/* Every group can be corrected without expanding, whatever its size. The shape of a
+          group says nothing about what its charges are — twelve $25 rows are a phone plan,
+          two $29 rows are two cables — so the tool suggests and the person decides. Each
+          charge still becomes its own asset row; expand to move just one of them. */""}
+    <td style="white-space:nowrap"><button class="tiny" onclick="sendGroupToAssets('${jsStr(g.key)}')"
+        title="${one
+          ? "This is a thing, not a service — move it to Assets, where the cost decides whether it is written off, pooled or depreciated."
+          : "Move all " + g.items.length + " charges to Assets as " + g.items.length + " separate asset rows. Expand the group to move just one."}"
+        >${TO_ASSETS}</button>
+      <button class="tiny danger" onclick="removeGroup('${jsStr(g.key)}')"
+        title="${one ? "Delete this charge."
+          : "Delete all " + g.items.length + " charges. Expand the group to delete just one."}"
+        >${DELETE_LABEL}</button></td></tr>`;
   if (!open) return head;
   return head + g.items.map(e => `<tr class="grp-item">
     <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
@@ -1383,7 +1604,9 @@ function groupHTML(g){
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
     <td><input value="${esc(e.basis)}" placeholder="why, and how the % was reached" onchange="setField('expenses','${e.id}','basis',this.value)"></td>
-    <td><button class="tiny danger" onclick="removeRow('expenses','${e.id}')">del</button></td>
+    <td style="white-space:nowrap"><button class="tiny" onclick="sendToAssets('${e.id}')"
+        title="This is a thing, not a service — move it to Assets, where the cost decides whether it is written off, pooled or depreciated.">${TO_ASSETS}</button>
+      <button class="tiny danger" onclick="removeRow('expenses','${e.id}')">${DELETE_LABEL}</button></td>
   </tr>`).join("");
 }
 
@@ -1394,7 +1617,7 @@ function setGroupField(key, field, value){
   const fy = activeYear;
   M.expenses.forEach(e => {
     if (fyOf(e.date) !== fy) return;
-    if (((e.supplier || e.description || "unattributed").trim()) !== key) return;
+    if (groupKeyOf(e) !== key) return;
     e[field] = field === "work_pct" ? num(value) : value;
   });
   touch();
@@ -1439,7 +1662,7 @@ function renderIncome(){
           <td class="n">${i.type==="disposal"?f("proceeds"):"—"}</td>
           <td class="n">${i.type==="disposal"?f("cost_base"):"—"}</td>
           <td class="n">${["interest","distribution","staking","airdrop"].includes(i.type)?f("gross_aud"):(i.type==="foreign"?money(grossAud(i)):"—")}</td>
-          <td><button class="tiny danger" onclick="removeRow('income','${i.id}')">del</button></td>
+          <td><button class="tiny danger" onclick="removeRow('income','${i.id}')">${DELETE_LABEL}</button></td>
         </tr>`; }).join("") : '<tr><td colspan="14" class="empty">No investment income recorded for this year.</td></tr>'}
       </tbody></table></div>
 
@@ -1573,17 +1796,28 @@ function renderData(){
    ACTIONS
    ============================================================ */
 
+// A blank work-use box means "take the default"; a typed 0 means zero. `num(v) || 100`
+// could not tell them apart and turned an explicit 0% into a 100% claim — the same
+// over-claiming default that a missing asset work_pct produces, reached by typing.
+function entryPct(sel){
+  const raw = String($(sel).value == null ? "" : $(sel).value).trim();
+  return raw === "" ? 100 : num(raw);
+}
+
+// Entry files into the tab you are standing on. The choice between a thing and a service
+// only arises for rows a converter classified by rule, and it is corrected there — on the
+// recorded row, with "→ asset" / "→ expense" — not offered again here, where nothing is
+// in doubt.
 function addAsset(){
   const desc = $("#a-desc").value.trim();
   const cost = num($("#a-cost").value);
   if (!desc || !cost) { alert("A description and a cost are needed."); return; }
   const date = $("#a-date").value || todayISO();
-  const a = { asset_id: nextAssetId(), description: desc, supplier: $("#a-sup").value.trim(),
+  M.assets.push({ asset_id: allocateAssetId(fyOf(date)), description: desc, supplier: $("#a-sup").value.trim(),
     purchase_date: date, cost, treatment: treatmentFor(cost),
     effective_life: suggestLife(desc), method: "prime_cost",
-    work_pct: { [fyOf(date)]: num($("#a-wp").value) || 100 }, status: "in_use",
-    category: $("#a-cat").value.trim() || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" };
-  M.assets.push(a);
+    work_pct: { [fyOf(date)]: entryPct("#a-wp") }, status: "in_use",
+    category: $("#a-cat").value.trim() || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" });
   ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
   touch();
 }
@@ -1592,7 +1826,7 @@ function addExpense(){
   const amt = num($("#e-amt").value);
   if (!amt) { alert("An amount is needed."); return; }
   M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
-    supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 100,
+    supplier: sup, amount: amt, work_pct: entryPct("#e-wp"),
     label: suggestLabel(sup, desc), category: $("#e-cat").value.trim() || suggestCategory(sup, desc),
     basis: ($("#e-basis").value || "").trim() });
   ["#e-desc","#e-sup","#e-amt","#e-cat","#e-basis"].forEach(s => $(s).value = "");
@@ -1726,9 +1960,19 @@ function download(blob, name){
 // may emit a transaction ID where another does not, and the same charge must still be
 // recognised across the two — an identity that only works when both sides agree on the
 // format is no identity at all.
+// A converter's own identity for the row, and the only key that means the same thing in
+// every collection — `source_ref` is unique within a source, and one receipt line is one
+// ref, so it identifies the charge no matter which collection the charge ended up in.
+// That matters because a row can move: correcting a misclassified import puts the same
+// charge in `assets` that arrived in `expenses`, and a per-collection check would not see
+// it there and would add it again on the next run.
+function sourceKey(r){
+  return (r && r.source && r.source_ref) ? "s:" + r.source + "|" + r.source_ref : null;
+}
 function rowKeys(r, kind){
   const keys = [];
-  if (r.source && r.source_ref) keys.push("s:" + r.source + "|" + r.source_ref);
+  const sk = sourceKey(r);
+  if (sk) keys.push(sk);
   if (kind === "assets")
     keys.push("h:" + [r.purchase_date, (r.description||"").trim().toLowerCase(), num(r.cost).toFixed(2)].join("|"));
   else if (kind === "income")
@@ -1742,13 +1986,23 @@ function planImport(parsed){
   const incoming = migrate(Object.assign(emptyModel(), parsed));
   const plan = { add:{assets:[],expenses:[],income:[]}, skip:{assets:[],expenses:[],income:[]}, years:[], cross:[] };
   const ix = supplierIndex();
+  // Converter identities are checked against the WHOLE ledger, not one collection. A row
+  // corrected from an expense into an asset keeps its source_ref, and the next run of the
+  // same converter must recognise it where it now lives — otherwise the correction quietly
+  // re-creates what it corrected, and the charge is claimed twice under two labels.
+  const sourceSeen = new Set();
+  for (const kind of ["assets","expenses","income"])
+    for (const r of M[kind]) { const k = sourceKey(r); if (k) sourceSeen.add(k); }
   for (const kind of ["assets","expenses","income"]) {
+    // Field hashes stay per-collection: they are built from different fields for each kind,
+    // so they say nothing across collections.
     const seen = new Set();
     for (const r of M[kind]) for (const k of rowKeys(r, kind)) seen.add(k);
     for (const r of (incoming[kind] || [])) {
-      const keys = rowKeys(r, kind);
-      if (keys.some(k => seen.has(k))) { plan.skip[kind].push(r); continue; }
+      const keys = rowKeys(r, kind), sk = sourceKey(r);
+      if ((sk && sourceSeen.has(sk)) || keys.some(k => seen.has(k))) { plan.skip[kind].push(r); continue; }
       keys.forEach(k => seen.add(k));    // also catches a file that repeats a row inside itself
+      if (sk) sourceSeen.add(sk);
       plan.add[kind].push(r);
     }
   }
@@ -1784,13 +2038,8 @@ function applyImport(plan, from){
       M[kind].push(r);
     }
   for (const a of plan.add.assets) {
-    if (!a.asset_id || takenAssets.has(a.asset_id)) {
-      const fy = fyOf(a.purchase_date) || activeYear || fyOf(todayISO());
-      const yr = parseInt(String(fy).slice(0,4),10) + 1;
-      let n = 1, id;
-      do { id = "A-" + yr + "-" + String(n++).padStart(3,"0"); } while (takenAssets.has(id));
-      a.asset_id = id;
-    }
+    if (!a.asset_id || takenAssets.has(a.asset_id))
+      a.asset_id = allocateAssetId(fyOf(a.purchase_date), takenAssets);
     takenAssets.add(a.asset_id);
     if (!a.treatment) a.treatment = treatmentFor(a.cost);
     M.assets.push(a);

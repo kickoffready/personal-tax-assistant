@@ -146,6 +146,12 @@ two errors are not symmetrical:
 
 Same reasoning as `work_pct`, applied to the collection instead of the percentage.
 
+This bias is only defensible because it is cheap to undo. Every row in the ledger carries a
+**→ asset** or **→ expense** button that moves it to the other collection, recomputing the
+treatment and the category and preserving `issuer`, `source` and `source_ref` — so the next
+run of the same converter recognises the corrected row where it now lives rather than adding
+it back. Guess, mark your reasoning in `basis`, and let the person with the receipt decide.
+
 ### Signals a converter can actually read
 
 **Says service:**

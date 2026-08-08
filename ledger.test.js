@@ -49,7 +49,13 @@ function boot(store = {}, refuseStorage = false, memoDom = false) {
       setItem: (k, v) => { if (refuseStorage) throw new Error("QuotaExceededError"); store[k] = v; },
       removeItem: k => { delete store[k]; }
     },
-    navigator: {}, alert: () => {}, confirm: () => true,
+    navigator: {},
+    // Dialogs are recorded so a test can read what the page said, and answered from the
+    // context so a test can decline one. CONFIRM_REPLY defaults to true — the behaviour
+    // every existing test was written against.
+    ALERTS: [], CONFIRMED: [], CONFIRM_REPLY: true,
+    alert: m => { ctx.ALERTS.push(String(m)); },
+    confirm: m => { ctx.CONFIRMED.push(String(m)); return ctx.CONFIRM_REPLY; },
     // Set PROMPT_REPLY from inside a test to answer the next prompt(); reading it off
     // the context is what lets an engine test drive a dialog the page opens.
     PROMPT_REPLY: "", prompt: () => ctx.PROMPT_REPLY,
@@ -1108,6 +1114,387 @@ t('the entry row can set a basis',
 t('and clears it for the next entry',
   vm.runInContext("document.querySelector('#e-basis').value", ex) === "",
   vm.runInContext("document.querySelector('#e-basis').value", ex), '""');
+
+/* ============================================================
+   Moving a row between Expenses and Assets.
+
+   IMPORT-FORMAT.md tells converters to send anything over $300 they cannot classify to
+   Assets, because a thing wrongly expensed over-claims while a service wrongly capitalised
+   only under-claims. That rule is deliberately biased, so it is deliberately wrong
+   sometimes, and it is only defensible because a correction exists.
+   ============================================================ */
+console.log("\n— a misclassified row can be corrected");
+
+const mv = (st = {}) => { const c = boot(st); vm.runInContext(code, c); return c; };
+const DOCK = `M.expenses.push({ id:"e-1", source:"gmail", source_ref:"msg-abc",
+  issuer:"dell", date:"2025-08-01", description:"WD19S dock", supplier:"Dell",
+  amount:310.32, work_pct:100, label:"D5", category:"Software and subscriptions",
+  basis:"used for the work laptop" }); activeYear = "2025-26";`;
+
+// ---- the duplicate this feature would otherwise manufacture ----
+// A row that leaves `expenses` must still be recognised by the converter that produced it.
+// Before the cross-collection source key, step 4 read "add 1, skip 0" and the ledger
+// claimed the same $310.32 twice — $58.19 at D6 and $310.32 at D5.
+const dup = mv();
+vm.runInContext(`
+  FILE = { schema:3, years:[], assets:[], income:[], expenses:[
+    { id:"e-1", source:"gmail", source_ref:"msg-abc", date:"2025-08-01",
+      description:"WD19S dock", supplier:"Dell", amount:310.32, work_pct:100, label:"D5" }]};
+  var copy = () => JSON.parse(JSON.stringify(FILE));
+  applyImport(planImport(copy()));
+  first = M.expenses.length;
+  var p2 = planImport(copy());
+  reimport = p2.add.expenses.length + "/" + p2.skip.expenses.length;
+  sendToAssets(M.expenses[0].id);
+  moved = M.expenses.length + "/" + M.assets.length;
+  var p4 = planImport(copy());
+  after = p4.add.expenses.length + "/" + p4.skip.expenses.length;
+  applyImport(p4);
+  total = M.expenses.length + M.assets.length;
+`, dup);
+t('the file imports once', vm.runInContext('first', dup) === 1, vm.runInContext('first', dup), 1);
+t('re-importing it skips', vm.runInContext('reimport', dup) === "0/1", vm.runInContext('reimport', dup), '0/1 (add/skip)');
+t('the row moves to assets', vm.runInContext('moved', dup) === "0/1", vm.runInContext('moved', dup), '0/1 (expenses/assets)');
+t('and is still recognised where it now lives',
+  vm.runInContext('after', dup) === "0/1", vm.runInContext('after', dup), '0/1 — not re-added');
+t('so the charge is held once, not twice',
+  vm.runInContext('total', dup) === 1, vm.runInContext('total', dup), 1);
+
+// ---- what the move preserves, and what it re-derives ----
+const one = mv();
+vm.runInContext(DOCK + ` sendToAssets("e-1"); A = M.assets[0];`, one);
+const A = k => vm.runInContext("A." + k, one);
+t('the asset keeps the purchase date', A("purchase_date") === "2025-08-01", A("purchase_date"), '2025-08-01');
+t('the cost is the expense amount', A("cost") === 310.32, A("cost"), 310.32);
+t('the supplier survives', A("supplier") === "Dell", A("supplier"), 'Dell');
+t('the issuer survives', A("issuer") === "dell", A("issuer"), 'dell');
+t('the converter identity survives',
+  A("source") === "gmail" && A("source_ref") === "msg-abc",
+  A("source") + "/" + A("source_ref"), 'gmail/msg-abc');
+t('the basis survives', A("basis") === "used for the work laptop", A("basis"), 'used for the work laptop');
+t('treatment is computed from the cost, not carried',
+  A("treatment") === "pool", A("treatment"), 'pool ($301–999)');
+t('the expense is gone', vm.runInContext("M.expenses.length", one) === 0,
+  vm.runInContext("M.expenses.length", one), 0);
+
+// The two taxonomies are disjoint by design — a laptop is never an Information service.
+// Carrying the category across would put a value in the picker the picker does not offer.
+t('the category is re-derived in the asset taxonomy',
+  A("category") === "Peripherals", A("category"), 'Peripherals (was "Software and subscriptions")');
+
+// workPctFor() reads a missing work_pct as 100 — the one default that errs toward
+// over-claiming, and a move is a way to reach it.
+t('work_pct becomes an object keyed by financial year',
+  typeof A("work_pct") === "object" && vm.runInContext('A.work_pct["2025-26"]', one) === 100,
+  JSON.stringify(A("work_pct")), '{"2025-26":100}');
+
+const zero = mv();
+vm.runInContext(DOCK.replace("work_pct:100", "work_pct:0") + ` sendToAssets("e-1");
+  wp = workPctFor(M.assets[0], "2025-26");`, zero);
+t('a 0% row does not arrive claiming 100%',
+  vm.runInContext('wp', zero) === 0, vm.runInContext('wp', zero), 0);
+
+// ---- the number that actually changes ----
+const claim = mv();
+vm.runInContext(DOCK + `
+  var before = buildLodgment("2025-26").deductions;
+  d5before = before.D5 ? before.D5.total : 0;
+  sendToAssets("e-1");
+  derive();
+  var after = buildLodgment("2025-26").deductions;
+  d5after = after.D5 ? after.D5.total : 0;
+  d6after = after.D6 ? after.D6.total : 0;
+`, claim);
+t('as an expense it claims its whole cost at D5',
+  near(vm.runInContext('d5before', claim), 310.32), vm.runInContext('d5before', claim), 310.32);
+t('as a pooled asset it claims 18.75% at D6',
+  near(vm.runInContext('d6after', claim), 58.19), vm.runInContext('d6after', claim).toFixed(2), 58.19);
+t('and nothing is left behind at D5',
+  near(vm.runInContext('d5after', claim), 0), vm.runInContext('d5after', claim), 0);
+
+// The confirmation is the whole safety net, so it has to state both numbers.
+t('the confirmation names what is claimed today',
+  dup.CONFIRMED.join(" ").indexOf("$310.32") !== -1, dup.CONFIRMED.join(" ").slice(0,80), 'mentions $310.32');
+t('and what will be claimed instead',
+  dup.CONFIRMED.join(" ").indexOf("$58.19") !== -1, dup.CONFIRMED.join(" ").slice(0,80), 'mentions $58.19');
+
+// ---- back the other way ----
+const trip = mv();
+vm.runInContext(DOCK + ` sendToAssets("e-1"); sendToExpenses(M.assets[0].asset_id); E = M.expenses[0];`, trip);
+const E = k => vm.runInContext("E." + k, trip);
+t('a round trip returns the date', E("date") === "2025-08-01", E("date"), '2025-08-01');
+t('a round trip returns the amount', E("amount") === 310.32, E("amount"), 310.32);
+t('a round trip returns the work use', E("work_pct") === 100, E("work_pct"), 100);
+t('a round trip keeps the converter identity',
+  E("source_ref") === "msg-abc" && E("issuer") === "dell",
+  E("source_ref") + "/" + E("issuer"), 'msg-abc/dell');
+t('a round trip keeps the basis', E("basis") === "used for the work laptop", E("basis"), 'used for the work laptop');
+t('and re-derives the category for expenses',
+  vm.runInContext('knownCategories("expenses").indexOf(E.category) !== -1 || E.category === ""', trip),
+  E("category"), 'an expense category');
+t('the asset is gone', vm.runInContext("M.assets.length", trip) === 0, vm.runInContext("M.assets.length", trip), 0);
+
+// ---- refusals ----
+// A disposal computes a balancing adjustment from fields an expense row cannot hold.
+const disp = mv();
+vm.runInContext(`
+  M.assets.push({ asset_id:"A-2026-001", description:"old laptop", supplier:"Dell",
+    purchase_date:"2025-08-01", cost:1800, treatment:"schedule", effective_life:2,
+    work_pct:{"2025-26":100}, status:"disposed", disposal_date:"2026-03-01",
+    disposal_proceeds:400 });
+  activeYear = "2025-26";
+  sendToExpenses("A-2026-001");
+`, disp);
+t('a disposed asset refuses to move',
+  vm.runInContext("M.assets.length", disp) === 1 && vm.runInContext("M.expenses.length", disp) === 0,
+  vm.runInContext("M.assets.length+'/'+M.expenses.length", disp), '1/0 — unchanged');
+t('and says why', disp.ALERTS.join(" ").indexOf("balancing adjustment") !== -1,
+  disp.ALERTS.join(" ").slice(0,60), 'mentions the balancing adjustment');
+
+// Declining the dialog must change nothing at all.
+const no = mv();
+no.CONFIRM_REPLY = false;
+vm.runInContext(DOCK + ` sendToAssets("e-1");`, no);
+t('declining the confirmation moves nothing',
+  vm.runInContext("M.expenses.length", no) === 1 && vm.runInContext("M.assets.length", no) === 0,
+  vm.runInContext("M.expenses.length+'/'+M.assets.length", no), '1/0 — unchanged');
+
+// ---- ids ----
+const ids = mv();
+vm.runInContext(`
+  M.assets.push({ asset_id:"A-2026-001", description:"held", purchase_date:"2025-09-01",
+    cost:500, treatment:"pool", work_pct:{"2025-26":100} });
+  M.expenses.push({ id:"e-a", date:"2025-08-01", description:"dock", supplier:"Dell", amount:400, work_pct:100 });
+  M.expenses.push({ id:"e-b", date:"2025-10-01", description:"stand", supplier:"Dell", amount:450, work_pct:100 });
+  activeYear = "2025-26";
+  sendToAssets("e-a"); sendToAssets("e-b");
+  allIds = M.assets.map(a => a.asset_id);
+`, ids);
+t('moved rows get ids in their own financial year',
+  vm.runInContext('allIds', ids).every(i => i.indexOf("A-2026-") === 0),
+  vm.runInContext('allIds', ids).join(","), 'all A-2026-*');
+t('and never collide with an id already held',
+  new Set(vm.runInContext('allIds', ids)).size === 3,
+  vm.runInContext('allIds', ids).join(","), '3 distinct ids');
+
+/* ============================================================
+   The entry rows.
+
+   Entry files into the tab you are standing on — the thing-or-service choice belongs to
+   rows a converter classified, and is corrected on the recorded row, not offered again
+   where nothing is in doubt.
+   ============================================================ */
+console.log("\n— the correction is reachable from the collapsed table");
+
+const entry = (fields) => {
+  const c = boot({}, false, true);
+  vm.runInContext(code, c);
+  vm.runInContext('activeYear = "2025-26";', c);
+  for (const [sel, v] of Object.entries(fields)) c.DOM[sel] = Object.assign(stubEl(), { value: v });
+  return c;
+};
+
+const EXP_FIELDS = { "#e-date":"2025-08-01", "#e-desc":"WD19S dock", "#e-sup":"Dell",
+  "#e-amt":"310.32", "#e-wp":"100", "#e-cat":"Software and subscriptions", "#e-basis":"work laptop" };
+
+// ---- every group is correctable, whatever its size ----
+// The button was first put on the expanded detail row only, so a collapsed group showed an
+// empty action cell and the Expenses tab looked like it had no buttons at all. Then it was
+// offered for one-charge groups only — but the size of a group says nothing about what its
+// charges are. Twelve $25 rows are a phone plan; two $29 rows are two cables. The tool
+// cannot tell, so it offers the move and the person decides.
+const grp = boot({}, false, true);
+vm.runInContext(code, grp);
+vm.runInContext(`
+  M.expenses.push({id:"solo",date:"2025-08-01",description:"WD19S dock",supplier:"Dell",
+    amount:310.32,work_pct:100,label:"D5"});
+  M.expenses.push({id:"c1",date:"2025-08-01",description:"USB-C cable",supplier:"Amazon",
+    amount:29,work_pct:100,label:"D5"});
+  M.expenses.push({id:"c2",date:"2025-08-01",description:"USB-C cable",supplier:"Amazon",
+    amount:29,work_pct:100,label:"D5"});
+  activeYear="2025-26"; openGroups={}; derive(); renderExpenses();
+`, grp);
+const gh = grp.DOM["#v-expenses"].innerHTML;
+const groupRow = key => {
+  const rows = gh.match(/<tr class="grp(?: open)?">[\s\S]*?<\/tr>/g) || [];
+  return rows.find(r => r.indexOf(">▸ " + key) !== -1) || "";
+};
+t('a collapsed one-charge group offers the move',
+  groupRow("Dell").indexOf("sendGroupToAssets('Dell')") !== -1,
+  groupRow("Dell").indexOf("→ asset") !== -1 ? "button present" : "no button", 'a → asset button');
+t('a two-charge group offers it too',
+  groupRow("Amazon").indexOf("sendGroupToAssets('Amazon')") !== -1,
+  groupRow("Amazon").indexOf("→ asset") !== -1 ? "button present" : "no button", 'a → assets button');
+// The label names the destination, not the count. Pluralising it by group size put
+// "→ asset" on one row and "→ assets" on the next, which reads as a fault in the table.
+t('every row asks for the same thing in the same words',
+  groupRow("Dell").indexOf(">→ Assets<") !== -1 && groupRow("Amazon").indexOf(">→ Assets<") !== -1,
+  [groupRow("Dell"), groupRow("Amazon")].map(r => (/>(→ [^<]*)</.exec(r) || ["","?"])[1]).join(" / "),
+  '→ Assets / → Assets');
+t('neither needs expanding first', Object.keys(vm.runInContext("openGroups", grp)).length === 0,
+  JSON.stringify(vm.runInContext("openGroups", grp)), '{} — nothing expanded');
+t('the group rows still fill every column',
+  (groupRow("Dell").match(/<td/g) || []).length === 9,
+  (groupRow("Dell").match(/<td/g) || []).length, 9);
+
+// Two cables are two assets, not one $58 asset — the $300 test applies per item.
+vm.runInContext(`sendGroupToAssets("Amazon");`, grp);
+t('a group moves as one row per item',
+  vm.runInContext("M.assets.length", grp) === 2, vm.runInContext("M.assets.length", grp), 2);
+t('each keeps its own cost',
+  vm.runInContext("M.assets.map(a=>a.cost).join()", grp) === "29,29",
+  vm.runInContext("M.assets.map(a=>a.cost).join()", grp), '29,29');
+t('and is tested on its own cost, not the receipt total',
+  vm.runInContext("M.assets.every(a=>a.treatment==='immediate')", grp),
+  vm.runInContext("M.assets.map(a=>a.treatment).join()", grp), 'immediate,immediate');
+t('their ids do not collide',
+  new Set(vm.runInContext("M.assets.map(a=>a.asset_id)", grp)).size === 2,
+  vm.runInContext("M.assets.map(a=>a.asset_id).join()", grp), '2 distinct ids');
+t('the charges leave expenses', vm.runInContext("M.expenses.length", grp) === 1,
+  vm.runInContext("M.expenses.length", grp), '1 — only the Dell dock is left');
+t('the confirmation says how many rows it makes',
+  /2 asset rows/.test(grp.CONFIRMED.join(" ")), grp.CONFIRMED.join(" ").slice(0,90), 'names 2 asset rows');
+
+// ---- deleting from the header, same reach as the move ----
+const del = boot({}, false, true);
+vm.runInContext(code, del);
+const DEL_ROWS = `
+  M.expenses.push({id:"solo",date:"2025-08-01",description:"dock",supplier:"Dell",
+    amount:310.32,work_pct:100,label:"D5"});
+  ["2025-08-01","2025-09-01","2025-10-01"].forEach(function(d,i){
+    M.expenses.push({id:"b"+i,date:d,description:"mobile",supplier:"Optus",
+      amount:25,work_pct:70,label:"D5"}); });
+  activeYear="2025-26"; openGroups={}; derive(); renderExpenses();`;
+vm.runInContext(DEL_ROWS, del);
+const delRow = key => (del.DOM["#v-expenses"].innerHTML.match(/<tr class="grp(?: open)?">[\s\S]*?<\/tr>/g) || [])
+  .find(r => r.indexOf(">▸ " + key) !== -1) || "";
+t('the group header offers del beside the move',
+  delRow("Optus").indexOf("removeGroup('Optus')") !== -1,
+  delRow("Optus").indexOf(">del<") !== -1 ? "del present" : "no del", 'a del button');
+t('and the two sit in one cell',
+  (delRow("Optus").match(/<td/g) || []).length === 9,
+  (delRow("Optus").match(/<td/g) || []).length, 9);
+
+vm.runInContext(`removeGroup("Optus");`, del);
+t('deleting a group removes every charge in it',
+  vm.runInContext("M.expenses.length", del) === 1,
+  vm.runInContext("M.expenses.length", del), '1 — only the Dell dock is left');
+t('the confirmation says how many and how much',
+  /all 3 .*charges/.test(del.CONFIRMED.join(" ")) && del.CONFIRMED.join(" ").indexOf("$75.00") !== -1,
+  del.CONFIRMED.join(" ").split("\n")[0], 'names 3 charges and $75.00');
+
+// A group of one is a single row, and asks the single-row question.
+vm.runInContext(`removeGroup("Dell");`, del);
+t('a one-charge group deletes just that charge',
+  vm.runInContext("M.expenses.length", del) === 0, vm.runInContext("M.expenses.length", del), 0);
+
+const keep = boot({}, false, true);
+vm.runInContext(code, keep);
+vm.runInContext(DEL_ROWS, keep);
+keep.CONFIRM_REPLY = false;
+vm.runInContext(`removeGroup("Optus"); removeGroup("Dell");`, keep);
+t('declining deletes nothing', vm.runInContext("M.expenses.length", keep) === 4,
+  vm.runInContext("M.expenses.length", keep), 4);
+
+// A supplier with an apostrophe used to break every handler on its group row: esc() turned
+// the quote into &#39;, the following replace found nothing, and the browser handed a bare
+// quote back to the JS parser.
+const apos = boot({}, false, true);
+vm.runInContext(code, apos);
+vm.runInContext(`
+  M.expenses.push({id:"d1",date:"2025-08-01",description:"coffee",supplier:"Dan's Cafe",
+    amount:12,work_pct:100,label:"D5"});
+  activeYear="2025-26"; openGroups={}; derive(); renderExpenses();
+`, apos);
+const ah = apos.DOM["#v-expenses"].innerHTML;
+// The browser decodes the attribute, so \&#39; becomes \' — an escaped quote inside the
+// single-quoted argument, rather than one that closes it.
+t('an apostrophe in a supplier is escaped for JavaScript',
+  ah.indexOf("sendGroupToAssets('Dan\\&#39;s Cafe')") !== -1,
+  (/sendGroupToAssets\([^)]*\)/.exec(ah) || ["missing"])[0], "sendGroupToAssets('Dan\\&#39;s Cafe')");
+t('and the group still moves', (() => {
+    vm.runInContext(`sendGroupToAssets("Dan's Cafe");`, apos);
+    return vm.runInContext("M.assets.length", apos) === 1;
+  })(), vm.runInContext("M.assets.length", apos), 1);
+
+/* ============================================================
+   Action columns say the same thing on every row.
+
+   The first version of the group button pluralised itself — "→ asset" on a one-charge
+   group, "→ assets" on the next — so a column of identical actions looked ragged and read
+   as a bug. Whatever a row contains, the action offered is the same action, and its label
+   names where the row is going rather than how many rows go with it.
+   ============================================================ */
+console.log("\n— the action column is consistent down every table");
+
+const cons = boot({}, false, true);
+vm.runInContext(code, cons);
+vm.runInContext(`
+  M.expenses.push({id:"one",date:"2025-08-01",description:"dock",supplier:"Dell",amount:310.32,work_pct:100,label:"D5"});
+  ["2025-08-01","2025-09-01"].forEach(function(d,i){
+    M.expenses.push({id:"a"+i,date:d,description:"cable",supplier:"Amazon",amount:29,work_pct:100,label:"D5"}); });
+  ["2025-08-01","2025-09-01","2025-10-01"].forEach(function(d,i){
+    M.expenses.push({id:"b"+i,date:d,description:"mobile",supplier:"Optus",amount:25,work_pct:70,label:"D5"}); });
+  M.assets.push({asset_id:"A-2026-001",description:"laptop",supplier:"Dell",purchase_date:"2025-08-01",
+    cost:1800,treatment:"schedule",effective_life:2,work_pct:{"2025-26":100}});
+  M.assets.push({asset_id:"A-2026-002",description:"chair",supplier:"Officeworks",purchase_date:"2025-09-01",
+    cost:400,treatment:"pool",work_pct:{"2025-26":100}});
+  M.income.push({id:"i1",date:"2025-08-01",type:"dividend",holding:"BANKA",franked:100});
+  activeYear="2025-26"; openGroups={"Amazon":true}; derive();
+  renderExpenses(); renderAssets(); renderIncome();
+`, cons);
+
+// Buttons in the LAST cell of each body row — the action column.
+function actionLabels(viewHTML){
+  const out = [];
+  for (const row of viewHTML.match(/<tr[^>]*>[\s\S]*?<\/tr>/g) || []) {
+    if (row.indexOf('class="add"') !== -1) continue;          // the entry row is not a record
+    const cells = row.match(/<td[\s\S]*?(?=<td|<\/tr>)/g) || [];
+    const last = cells[cells.length - 1] || "";
+    for (const b of last.match(/>([^<>]+)<\/button>/g) || []) out.push(b.slice(1, -9).trim());
+  }
+  return out;
+}
+const distinct = a => [...new Set(a)].sort();
+
+for (const [view, expected] of [
+  ["#v-expenses", ["del", "→ Assets"]],
+  ["#v-assets",   ["del", "→ Expenses"]],
+  ["#v-income",   ["del"]]
+]) {
+  const got = distinct(actionLabels(cons.DOM[view].innerHTML));
+  t(view + ": the action column offers one vocabulary",
+    got.join("|") === expected.join("|"), got.join(", ") || "(none)", expected.join(", "));
+}
+
+// Every kind of row in Expenses — a group of one, a group of many, and an expanded charge —
+// must all offer the move, or the column has a hole in it like the one that started this.
+const exRows = (cons.DOM["#v-expenses"].innerHTML.match(/<tr class="grp[^"]*">[\s\S]*?<\/tr>/g) || [])
+  .concat(cons.DOM["#v-expenses"].innerHTML.match(/<tr class="grp-item">[\s\S]*?<\/tr>/g) || []);
+t('no expense row is left without the move',
+  exRows.length > 0 && exRows.every(r => r.indexOf(">→ Assets<") !== -1),
+  exRows.filter(r => r.indexOf(">→ Assets<") === -1).length + " of " + exRows.length + " missing it", '0 missing');
+t('and none without del',
+  exRows.every(r => r.indexOf(">del<") !== -1),
+  exRows.filter(r => r.indexOf(">del<") === -1).length + " of " + exRows.length + " missing it", '0 missing');
+
+console.log("\n— what the entry row does with a work-use percentage");
+
+// ---- a typed 0% is zero, not the default ----
+// `num(v) || 100` read an explicit 0 as blank and claimed the full amount.
+const z = entry(Object.assign({}, EXP_FIELDS, { "#e-wp":"0" }));
+vm.runInContext(`addExpense();`, z);
+t('a typed 0% work use claims nothing', vm.runInContext("M.expenses[0].work_pct", z) === 0,
+  vm.runInContext("M.expenses[0].work_pct", z), 0);
+const zb = entry(Object.assign({}, EXP_FIELDS, { "#e-wp":"" }));
+vm.runInContext(`addExpense();`, zb);
+t('and a blank one still defaults to 100', vm.runInContext("M.expenses[0].work_pct", zb) === 100,
+  vm.runInContext("M.expenses[0].work_pct", zb), 100);
+const za = entry({ "#a-desc":"dock", "#a-sup":"Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"0", "#a-cat":"" });
+vm.runInContext(`addAsset();`, za);
+t('the same holds on the asset entry row',
+  vm.runInContext('workPctFor(M.assets[0],"2025-26")', za) === 0,
+  vm.runInContext('workPctFor(M.assets[0],"2025-26")', za), 0);
 
 console.log("\n" + R.pass + " passed, " + R.fail + " failed\n");
 process.exit(R.fail ? 1 : 0);
