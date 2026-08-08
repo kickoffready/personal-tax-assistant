@@ -39,8 +39,8 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 
 | Collection | Persisted | Notes |
 |---|---|---|
-| `years[]` | yes | `year`, `taxable_income`, `payg_withheld`, `marginal_plus_levy`, `estimated`, `assessed`, `variance`, `noa_date`, `cf_capital_loss` |
-| `assets[]` | yes | `asset_id`, `description`, `serial`, `supplier`, `purchase_date`, `cost_incl`, `evidence`, `treatment`, `effective_life`, `method`, `work_pct{}` by year, `status`, `disposal_date`, `disposal_proceeds` |
+| `years[]` | yes | `year`, `marginal_plus_levy`, `estimated`, `assessed`, `variance`, `noa_date`, `cf_capital_loss` |
+| `assets[]` | yes | `asset_id`, `description`, `supplier`, `purchase_date`, `cost_incl`, `treatment`, `effective_life`, `method`, `work_pct{}`, `disposal_date`, `disposal_proceeds` |
 | `expenses[]` | yes | `date`, `description`, `supplier`, `amount`, `work_pct`, `label`, `basis`, `evidence` |
 | `income[]` | yes | `date`, `type`, `holding`, `gross_foreign`, `currency`, `fx_rate`, `tax_withheld_aud`, `franked`, `unfranked`, `credit` |
 | `depreciation[]` | **no — derived** | one row per asset per year held |
@@ -53,7 +53,7 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 
 - **Prime cost**: `cost × (days_held ÷ 365) × (100% ÷ effective_life)`; **diminishing value** as the alternative, fixed at acquisition.
 - **Treatment from cost, not work-use**: ≤$300 immediate (D5) · $301–999 pool-eligible (D6) · ≥$1,000 individual schedule (D5).
-- **Low-value pool**: 18.75% in the year of allocation regardless of date, 37.5% diminishing thereafter. Enforce the one-way rule — once a pool exists, later low-cost assets must be pooled.
+- **Low-value pool**: 18.75% in the year of allocation regardless of date, 37.5% diminishing thereafter. One taxable-use estimate is fixed at allocation. Disposal proceeds at that percentage reduce the closing balance, with any excess reported as income. Enforce the one-way rule — once a pool exists, later low-cost assets must be pooled.
 - **CGT ordering**: current-year losses (preferring non-discountable gains) → carried-forward losses oldest-first → *then* the 50% discount.
 - **Retention**: `keep_until` = latest of lodgment + 5y, last decline claim + 5y, and for CGT assets disposal + 5y.
 - **Roll-forward**: "Start FY2026–27" carries closing → opening, pool balance, and unused capital loss; assets persist untouched.
@@ -76,10 +76,23 @@ The boundary: **arithmetic and hard rules are computed; judgement stays with the
 | CGT ordering — losses before discount | | |
 | Marginal rate + 2% Medicare levy | | |
 
-Two consequences worth building for:
+Three consequences worth building for:
 
-- **Work-use % is entered per asset, not per year.** It carries forward; a change between years without a corresponding `basis` note raises an integrity warning.
+- **A scheduled asset's work-use % may change by year.** It carries forward; a change without a corresponding `basis` note raises an integrity warning.
+- **A pooled asset has one taxable-use estimate, not yearly work-use inputs.** It is made when the asset enters the pool and cannot be varied later. The register therefore edits the allocation estimate from every year rather than storing percentages that do nothing.
 - **Under the 70c fixed rate there are no percentages at all** — hours replace them, and energy, phone, internet and stationery are covered by the rate. The tool must make the fixed-rate/actual-cost choice explicit per year and then hide the irrelevant inputs, rather than asking for both.
+
+### Claim-first asset entry
+
+The default Assets view contains only inputs that can change the calculation: description,
+purchase date, cost, treatment/calculation settings and claim-use percentage. Supplier,
+category, basis, disposal and retention remain in the expandable asset
+record because they support lodgment or substantiation, but they do not compete with the claim
+inputs. A field that supports neither is not demoted, it is removed: `serial`, `evidence`,
+`taxable_income` and `payg_withheld` were stored and then read by nothing, and schema 3 drops
+them on load. `status` is not stored for new rows or shown: a disposal date is the single event input.
+Opening value, decline and closing value are derived audit output and live in the expanded
+schedule rather than being repeated across the main register.
 
 ### Views
 
@@ -93,11 +106,46 @@ Two consequences worth building for:
    D6  Low-value pool                     $412.50   [copy]
    D9  Gifts or donations                 $180.00   [copy]
    ```
-2. **Assets** — register, decision rule applied from cost, per-year depreciation trace per asset.
+2. **Assets** — claim-first register; record-only metadata and the per-year depreciation trace expand beneath each asset.
 3. **Expenses** — entry with label picker and basis field.
 4. **Income** — dividends split franked/unfranked/credit, foreign gross + FITO, disposals.
 5. **Year** — reconciliation against the assessment; NOA date drives an amendment-window countdown.
 6. **Data** — load, save, CSV export, autosave status, integrity report.
+
+### Undoing an import
+
+Import is the one place data arrives that nobody typed, and the file can be the wrong account,
+the wrong year or the wrong export entirely. Because `applyImport()` only ever pushes — no
+existing row is modified, replaced or removed, and a year you already set up is never queued —
+undo is the exact inverse: **remove what the import added, and nothing you own**. Rows you
+typed, edits you made and year settings you changed all survive it.
+
+`lastImport` records `{at, from, summary, added:{expenses,income,assets,years}}`, holding the
+row **ids** captured *after* `applyImport` re-keys any that collided — read them earlier and
+undo hunts for rows under names they no longer have. Ids rather than object references also
+mean the record survives JSON, so it rides along in the autosave slot and an undo is still
+there after a refresh or a crash. Nothing is stamped on the rows themselves: the saved
+`ledger.json` is byte-identical before an import and after undoing it.
+
+The control is a banner in the `#recovery` slot, stacking under the recovered-draft banner
+rather than replacing it, since crashing straight after a bad import is one situation and not
+two. **Keep them** retires the banner, and with it the undo — dismissing is a decision that the
+rows are right. Opening a file, `resetAll()` and `discardRecovery()` all clear the record,
+because an undo pointing into a ledger that is no longer loaded would be a lie.
+
+The income-year picker in the top bar is not only a filter — `work_pct[activeYear]` and every
+field on the Year tab write to whichever year is showing — so it carries a lock. One click
+jumps to the **reporting year** and pins the dropdown there.
+
+The reporting year is the one that has *finished*, not the one the calendar is in:
+`reportingYear()` = `fyPrev(fyOf(today))`, so from 1 July 2026 it is FY2025-26 — the return
+being prepared — even though the date is inside FY2026-27. It is disabled when that year has
+nothing recorded in it yet, rather than pinning some other year instead.
+
+The lock persists per-browser with the year it was set on, and is only restored alongside that
+year. It never silently re-points: the moves that are announced rather than accidental still
+get through — rolling forward carries the lock to the year it creates, opening a file drops it,
+and a locked year that disappears drops it.
 
 ### Integrity checks
 

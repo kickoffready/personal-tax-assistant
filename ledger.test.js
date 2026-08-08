@@ -26,16 +26,22 @@ function assert(name, cond, got, want) {
 }
 
 function stubEl() {
-  return { innerHTML:"", textContent:"", value:"", className:"", hidden:false,
-    classList:{ toggle(){}, add(){}, remove(){} }, addEventListener(){},
+  return { innerHTML:"", textContent:"", value:"", className:"", hidden:false, disabled:false,
+    classList:{ toggle(){}, add(){}, remove(){} }, addEventListener(){}, setAttribute(){},
     children:[], click(){}, appendChild(){}, removeChild(){}, closest(){ return null; } };
 }
 
-/** A fresh page load. `store` persists across boots to simulate a reload. */
-function boot(store = {}, refuseStorage = false) {
+/**
+ * A fresh page load. `store` persists across boots to simulate a reload.
+ * `memoDom` returns the same stub for a given selector every time, so a test can read
+ * back what a render function wrote. Off by default — most tests want a blank element.
+ */
+function boot(store = {}, refuseStorage = false, memoDom = false) {
+  const els = {};
+  const pick = sel => memoDom ? (els[sel] = els[sel] || stubEl()) : stubEl();
   const ctx = {
-    console, setTimeout, t: assert, near,
-    document: { querySelector: stubEl, querySelectorAll: () => [], createElement: stubEl,
+    console, setTimeout, t: assert, near, DOM: els,
+    document: { querySelector: pick, querySelectorAll: () => [], createElement: stubEl,
       body: { appendChild(){}, removeChild(){} }, addEventListener(){} },
     window: { addEventListener(){} },
     localStorage: {
@@ -68,6 +74,15 @@ t('full year = 365 days', daysHeldIn('2025-26','2020-01-01',null)===365, daysHel
 t('bought 1 Jan = 181 days', daysHeldIn('2025-26','2026-01-01',null)===181, daysHeldIn('2025-26','2026-01-01',null),181);
 t('not yet owned = 0', daysHeldIn('2025-26','2027-01-01',null)===0, daysHeldIn('2025-26','2027-01-01',null),0);
 t('disposed mid-year apportions', daysHeldIn('2025-26','2020-01-01','2025-12-31')===184, daysHeldIn('2025-26','2020-01-01','2025-12-31'),184);
+t('next FY', fyNext('2025-26')==='2026-27', fyNext('2025-26'),'2026-27');
+t('previous FY', fyPrev('2025-26')==='2024-25', fyPrev('2025-26'),'2024-25');
+
+// The year you report on is the one that has finished, not the one you are standing in.
+t('in August you are lodging the year that just closed',
+  reportingYear('2026-08-09')==='2025-26', reportingYear('2026-08-09'),'2025-26');
+t('1 July flips it over', reportingYear('2026-07-01')==='2025-26', reportingYear('2026-07-01'),'2025-26');
+t('30 June is one day too early', reportingYear('2026-06-30')==='2024-25', reportingYear('2026-06-30'),'2024-25');
+t('and it keeps rolling', reportingYear('2027-09-01')==='2026-27', reportingYear('2027-09-01'),'2026-27');
 
 console.log('\\n— treatment decided by cost, not work use');
 [[300,'immediate'],[301,'pool'],[999,'pool'],[1000,'schedule'],[1890,'schedule']]
@@ -109,13 +124,29 @@ t('an exact year still wins', workPctFor({work_pct:{'2024-25':50,'2026-27':80}},
 console.log('\\n— schema 1 files still load');
 let leg = migrate({schema:1, expenses:[{id:'e',amount:100,work_pct:0.7}],
   assets:[{asset_id:'A',cost:2000,work_pct:{'2024-25':0.8,'2025-26':0.5}},{asset_id:'B',cost:500,work_pct:0.25}]});
-t('schema bumped to 2', leg.schema===2, leg.schema, 2);
+t('schema bumped to 3', leg.schema===3, leg.schema, 3);
 t('expense 0.7 becomes 70', leg.expenses[0].work_pct===70, leg.expenses[0].work_pct, 70);
 t('per-year 0.8 becomes 80', leg.assets[0].work_pct['2024-25']===80, leg.assets[0].work_pct['2024-25'], 80);
 t('a scalar 0.25 becomes 25', leg.assets[1].work_pct===25, leg.assets[1].work_pct, 25);
 t('migrating twice changes nothing', migrate(leg).expenses[0].work_pct===70, migrate(leg).expenses[0].work_pct, 70);
-t('a schema 2 file is left alone', migrate({schema:2,expenses:[{work_pct:70}]}).expenses[0].work_pct===70,
+t('a schema 2 file keeps its percentages', migrate({schema:2,expenses:[{work_pct:70}]}).expenses[0].work_pct===70,
   migrate({schema:2,expenses:[{work_pct:70}]}).expenses[0].work_pct, 70);
+
+// Four fields nothing ever read back. They are dropped on the way in, so a file sheds
+// them the first time it is opened and saved — and what did the work is left untouched.
+let stripped = migrate({schema:2,
+  years:[{year:'2025-26', taxable_income:98000, payg_withheld:24000, marginal:0.32, wfh_hours:800}],
+  assets:[{asset_id:'A', cost:1890, serial:'C02X1234', evidence:'evidence/2026/A-invoice.pdf',
+    work_pct:{'2025-26':70}, basis:'phone, 70% work'}]});
+t('serial is dropped', !('serial' in stripped.assets[0]), Object.keys(stripped.assets[0]).join(','), 'no serial');
+t('evidence path is dropped', !('evidence' in stripped.assets[0]), Object.keys(stripped.assets[0]).join(','), 'no evidence');
+t('taxable income is dropped', !('taxable_income' in stripped.years[0]), Object.keys(stripped.years[0]).join(','), 'no taxable_income');
+t('PAYG withheld is dropped', !('payg_withheld' in stripped.years[0]), Object.keys(stripped.years[0]).join(','), 'no payg_withheld');
+t('the claim inputs survive', stripped.assets[0].cost===1890 && stripped.assets[0].work_pct['2025-26']===70,
+  stripped.assets[0].cost+'/'+stripped.assets[0].work_pct['2025-26'], '1890/70');
+t('the basis note survives', stripped.assets[0].basis==='phone, 70% work', stripped.assets[0].basis, 'phone, 70% work');
+t('the year settings survive', stripped.years[0].marginal===0.32 && stripped.years[0].wfh_hours===800,
+  stripped.years[0].marginal+'/'+stripped.years[0].wfh_hours, '0.32/800');
 
 console.log('\\n— one service, one percentage');
 setModel({years:[{year:'2025-26'}], expenses:[
@@ -333,6 +364,98 @@ applyImport(planImport({schema:2, years:[{year:'2025-26', marginal:0.32}, {year:
 t('your own year settings stand', M.years.find(y=>y.year==='2025-26').marginal===0.47,
   M.years.find(y=>y.year==='2025-26').marginal, 0.47);
 t('a genuinely new year is added', M.years.some(y=>y.year==='2027-28'), 'added','added');
+
+// Import is append-only, so undo is subtraction-only. The test of that is not "the rows
+// are gone" but "everything else is exactly as it was" — a wrong file should cost you
+// the wrong file, not the afternoon.
+console.log('\\n— undoing an import that turned out to be the wrong file');
+setModel({years:[{year:'2025-26',marginal:0.47,wfh_method:'fixed',wfh_hours:800}], expenses:[
+  {id:'kept',date:'2025-09-01',description:'union fees',supplier:'Union',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26';
+const before = JSON.stringify(derive().lodgment['2025-26']);
+applyImport(planImport(JSON.parse(JSON.stringify(FEED))), 'paypal-2026.json');
+t('the import lands', M.expenses.length===3 && M.assets.length===1,
+  M.expenses.length+'e/'+M.assets.length+'a', '3e/1a');
+t('and is recorded by id, not by row', lastImport.added.assets[0]==='A-2026-001',
+  JSON.stringify(lastImport.added.assets), '["A-2026-001"]');
+t('with the file it came from', lastImport.from==='paypal-2026.json', lastImport.from,'paypal-2026.json');
+
+t('undo reports success', undoLastImport()===true, 'true','true');
+t('the imported expenses are gone', M.expenses.length===1, M.expenses.length, 1);
+t('your own row is untouched', M.expenses[0].id==='kept' && M.expenses[0].amount===600,
+  M.expenses[0].id+'/'+M.expenses[0].amount, 'kept/600');
+t('the imported asset is gone', M.assets.length===0, M.assets.length, 0);
+t('every lodgment total is back where it was', JSON.stringify(derive().lodgment['2025-26'])===before,
+  JSON.stringify(derive().lodgment['2025-26']), before);
+t('and there is nothing left to undo', lastImport===null, lastImport, 'null');
+t('undoing twice is not an error', undoLastImport()===false, undoLastImport(),'false');
+
+// A year the import created is the import's to remove. A year you had already set up is
+// not — and it never was, since planImport refuses to queue one.
+console.log('\\n— undo gives back years the import made, and only those');
+setModel({years:[{year:'2025-26',marginal:0.47}], expenses:[
+  {id:'mine',date:'2025-09-01',description:'union fees',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26';
+applyImport(planImport({schema:2, years:[{year:'2025-26',marginal:0.32},{year:'2027-28'}],
+  expenses:[{id:'imp',date:'2027-09-01',description:'hosting',supplier:'Cloudflare',amount:90,work_pct:100,label:'D5'}]}));
+t('the new year arrives', M.years.some(y=>y.year==='2027-28'), 'added','added');
+undoLastImport();
+t('the new year goes back out', M.years.some(y=>y.year==='2027-28')===false, 'gone','gone');
+t('your year stays, with your rate', M.years.find(y=>y.year==='2025-26').marginal===0.47,
+  M.years.find(y=>y.year==='2025-26').marginal, 0.47);
+t('and your row stays with it', M.expenses.length===1 && M.expenses[0].id==='mine',
+  M.expenses.length+'/'+M.expenses[0].id, '1/mine');
+
+// applyImport re-keys an incoming id that collides. Read the ids before that happens and
+// undo hunts for a row under a name it no longer has — deleting the wrong row, or none.
+console.log('\\n— a re-keyed row is still found by undo');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'kept',date:'2025-09-01',description:'union fees',supplier:'Union',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26';
+applyImport(planImport({schema:2, expenses:[
+  {id:'kept',date:'2026-02-02',description:'domain',supplier:'Namecheap',amount:22,work_pct:100,label:'D5'}]}));
+t('the collision is re-keyed on the way in', M.expenses.length===2 && M.expenses[1].id!=='kept',
+  M.expenses.map(e=>e.id).join(','), 'kept + something else');
+t('undo tracked the new id', lastImport.added.expenses[0]===M.expenses[1].id,
+  lastImport.added.expenses[0], M.expenses[1].id);
+undoLastImport();
+t('the re-keyed row is removed', M.expenses.length===1, M.expenses.length, 1);
+t('and the original keeps its id and amount', M.expenses[0].id==='kept' && M.expenses[0].amount===600,
+  M.expenses[0].id+'/'+M.expenses[0].amount, 'kept/600');
+
+// You are allowed to keep working while you decide whether the import was right.
+console.log('\\n— work done after the import survives the undo');
+setModel({years:[{year:'2025-26'}], expenses:[]});
+activeYear='2025-26';
+applyImport(planImport(JSON.parse(JSON.stringify(FEED))));
+M.expenses.push({id:'typed',date:'2025-10-01',description:'stationery',supplier:'Officeworks',
+  amount:45,work_pct:100,label:'D5'});
+M.years[0].wfh_hours = 900;
+undoLastImport();
+t('the row you typed is still there', M.expenses.length===1 && M.expenses[0].id==='typed',
+  M.expenses.map(e=>e.id).join(',')||'none', 'typed');
+t('and the year setting you changed', M.years[0].wfh_hours===900, M.years[0].wfh_hours, 900);
+
+// Re-importing the same file adds nothing. Arming an undo for that would offer to remove
+// rows the earlier import owns.
+console.log('\\n— an import that adds nothing arms nothing');
+setModel({years:[{year:'2025-26'}], expenses:[]});
+activeYear='2025-26';
+applyImport(planImport(JSON.parse(JSON.stringify(FEED))), 'first.json');
+applyImport(planImport(JSON.parse(JSON.stringify(FEED))), 'again.json');
+t('the second import is not what undo points at', lastImport.from==='first.json',
+  lastImport.from, 'first.json');
+undoLastImport();
+t('and undo still clears the rows the first one added', M.expenses.length===0 && M.assets.length===0,
+  M.expenses.length+'e/'+M.assets.length+'a', '0e/0a');
+
+// A record pointing into a ledger that is no longer loaded would be a lie.
+console.log('\\n— replacing the ledger retires the undo');
+setModel({years:[{year:'2025-26'}], expenses:[]});
+activeYear='2025-26';
+applyImport(planImport(JSON.parse(JSON.stringify(FEED))));
+resetAll();
+t('clearing everything clears the import record', lastImport===null, lastImport,'null');
 
 console.log('\\n— the same supplier under two different names is one supplier');
 t('company suffixes are noise', normaliseSupplier('OPTUS PTY LTD')===normaliseSupplier('Optus'),
@@ -792,6 +915,37 @@ t('discarding clears both draft and flag',
   && !store['tax-ledger-autosave-v1'],
   vm.runInContext('[M.assets.length,recoveredAt].join(",")',s5),'0,null + key gone');
 
+// You import the wrong file, then the browser dies — or you just refresh to look again.
+// An undo that only lived in memory would have been the one thing you needed.
+console.log('\\n— the undo survives a reload');
+const impStore = {};
+const impBoot = () => { const c = boot(impStore); vm.runInContext(code, c); return c; };
+let i1 = impBoot();
+vm.runInContext(`M.years=[{year:'2025-26'}];
+  M.expenses=[{id:'mine',date:'2025-09-01',description:'union fees',amount:600,work_pct:100,label:'D5'}];
+  activeYear='2025-26';
+  applyImport(planImport({schema:2, expenses:[
+    {id:'bad',date:'2026-01-05',description:'someone elses phone',supplier:'Telco',
+     amount:1200,work_pct:100,label:'D5'}]}), 'wrong-account.json');`, i1);
+t('the import is in the autosave',
+  /wrong-account\.json/.test(impStore['tax-ledger-autosave-v1']||''), 'stored','stored');
+
+let i2 = impBoot();   // a fresh page load against the same browser
+t('the undo record comes back', vm.runInContext('lastImport && lastImport.from',i2)==='wrong-account.json',
+  vm.runInContext('lastImport && lastImport.from',i2), 'wrong-account.json');
+t('and the rows came back with it', vm.runInContext('M.expenses.length',i2)===2,
+  vm.runInContext('M.expenses.length',i2), 2);
+t('undo still works after the reload', vm.runInContext('undoLastImport()',i2)===true, 'true','true');
+t('leaving only what you typed',
+  vm.runInContext(`M.expenses.length===1 && M.expenses[0].id==='mine'`,i2),
+  vm.runInContext('M.expenses.map(e=>e.id).join(",")',i2), 'mine');
+
+let i3 = impBoot();   // and the undo itself has to stick
+t('the undone import does not come back', vm.runInContext('M.expenses.length',i3)===1,
+  vm.runInContext('M.expenses.length',i3), 1);
+t('and the banner does not either', vm.runInContext('lastImport',i3)===null,
+  vm.runInContext('lastImport',i3), 'null');
+
 console.log('\\n— storage unavailable (Safari private / file:// quota)');
 delete store['tax-ledger-autosave-v1'];
 let s6=bootWith(true); // setItem always throws
@@ -801,6 +955,159 @@ t('storage failure is detected', vm.runInContext('autosaveOK',s6)===false,
 t('the app keeps working without a net',
   vm.runInContext('M.assets.length',s6)===1, vm.runInContext('M.assets.length',s6),1);
 
+
+// The year picker is a write target, not just a filter: work_pct[activeYear] and every
+// field on the Year tab land in whichever year is showing. The lock is what stops a
+// stray click redirecting the next thing you type into a return you already lodged.
+console.log('\\n— the year lock pins the write target');
+// A store per scenario, except where a reload is the thing under test — the lock lives
+// in localStorage, so sharing one would let each case inherit the last one's answer.
+const lockBoot = (st = {}) => { const c = boot(st); vm.runInContext(code, c); return c; };
+
+// Built off the real reporting year, so these stay true after 30 June rolls over rather
+// than needing a hardcoded FY edited once a year. RY is what the lock targets; PRIOR is
+// the year beside it that the lock has to refuse to drift into.
+const probe = lockBoot();
+const RY = vm.runInContext('reportingYear()', probe);
+const PRIOR = vm.runInContext(`fyPrev(reportingYear())`, probe);
+const NEXT = vm.runInContext(`fyNext(reportingYear())`, probe);
+const sep = fy => fy.slice(0,4) + '-09-01';   // a date inside that FY
+const TWO_YEARS = `M.years=[{year:'${PRIOR}',marginal:0.32},{year:'${RY}',marginal:0.32}];
+  M.expenses=[{id:'x1',date:'${sep(PRIOR)}',description:'union fees',amount:600,work_pct:100,label:'D5'},
+              {id:'x2',date:'${sep(RY)}',description:'union fees',amount:600,work_pct:100,label:'D5'}];
+  M.assets=[{asset_id:'A-1',description:'phone',purchase_date:'${PRIOR.slice(0,4)}-08-01',cost:1200,
+             treatment:'schedule',effective_life:3,method:'prime_cost',work_pct:{'${PRIOR}':70}}];
+  activeYear='${PRIOR}'; render();`;
+
+const reloadStore = {};
+let k1 = lockBoot(reloadStore);
+vm.runInContext(TWO_YEARS, k1);
+t('unlocked, the year changes', vm.runInContext(`setActiveYear('${RY}')`,k1)===true &&
+  vm.runInContext('activeYear',k1)===RY, vm.runInContext('activeYear',k1),RY);
+
+// The point of the button: it does not pin what you happen to be looking at, it puts you
+// on the return you are actually preparing.
+vm.runInContext(`setActiveYear('${PRIOR}'); toggleYearLock();`, k1);
+t('locking jumps to the reporting year', vm.runInContext('activeYear',k1)===RY,
+  vm.runInContext('activeYear',k1),RY);
+t('from wherever you were', PRIOR !== RY, PRIOR+' -> '+RY, 'a real move');
+t('locked, the change is refused', vm.runInContext(`setActiveYear('${PRIOR}')`,k1)===false,
+  vm.runInContext(`setActiveYear('${PRIOR}')`,k1),'false');
+t('and the year does not move', vm.runInContext('activeYear',k1)===RY,
+  vm.runInContext('activeYear',k1),RY);
+
+// The write that the lock exists to protect.
+vm.runInContext(`setField('assets','A-1','work_pct_year',40);`, k1);
+t('the work-use % writes to the locked year',
+  vm.runInContext(`M.assets[0].work_pct['${RY}']`,k1)===40,
+  vm.runInContext(`JSON.stringify(M.assets[0].work_pct)`,k1),RY+' = 40');
+t('and not to the year you nearly clicked',
+  vm.runInContext(`M.assets[0].work_pct['${PRIOR}']`,k1)===70,
+  vm.runInContext(`JSON.stringify(M.assets[0].work_pct)`,k1),PRIOR+' still 70');
+
+// A lock that did not survive a reload would not be a lock.
+let k2 = lockBoot(reloadStore);
+vm.runInContext(TWO_YEARS.replace(`activeYear='${PRIOR}'; render();`,'render(); restoreUI();'), k2);
+t('the lock survives a reload', vm.runInContext('yearLocked',k2)===true, vm.runInContext('yearLocked',k2),'true');
+t('with the year it was set on', vm.runInContext('activeYear',k2)===RY,
+  vm.runInContext('activeYear',k2),RY);
+
+// Unlocking is one click, and it has to actually let go — without dragging you elsewhere.
+vm.runInContext('toggleYearLock();', k2);
+t('unlocking leaves you where you are', vm.runInContext('activeYear',k2)===RY,
+  vm.runInContext('activeYear',k2),RY);
+t('unlocking releases the year', vm.runInContext(`setActiveYear('${PRIOR}')`,k2)===true &&
+  vm.runInContext('activeYear',k2)===PRIOR, vm.runInContext('activeYear',k2),PRIOR);
+
+// Nothing recorded in the reporting year yet — there is no year to lock to, and the
+// button must say so rather than silently pinning something else.
+let k5 = lockBoot();
+vm.runInContext(`M.years=[{year:'${PRIOR}'}];
+  M.expenses=[{id:'y1',date:'${sep(PRIOR)}',amount:600,work_pct:100,label:'D5'}];
+  activeYear='${PRIOR}'; render();`, k5);
+t('no reporting year, no lock', vm.runInContext('toggleYearLock()',k5)===false,
+  vm.runInContext('yearLocked',k5),'false');
+t('and it does not move you', vm.runInContext('activeYear',k5)===PRIOR,
+  vm.runInContext('activeYear',k5),PRIOR);
+
+// Opening another file must not leave a lock pointing at a year that file may not have.
+let k3 = lockBoot();
+vm.runInContext(TWO_YEARS + 'toggleYearLock();', k3);
+vm.runInContext(`M = emptyModel(); activeYear = null; yearLocked = false; render();`, k3);
+t('opening a file drops the lock', vm.runInContext('yearLocked',k3)===false,
+  vm.runInContext('yearLocked',k3),'false');
+
+// Rolling forward names the year it creates, so it is announced, not accidental.
+let k4 = lockBoot();
+vm.runInContext(TWO_YEARS + `toggleYearLock(); rollForward();`, k4);
+t('roll forward moves past the lock', vm.runInContext('activeYear',k4)===NEXT,
+  vm.runInContext('activeYear',k4),NEXT);
+t('and stays locked on the new year', vm.runInContext('yearLocked',k4)===true,
+  vm.runInContext('yearLocked',k4),'true');
+
+/* ============================================================
+   The entry row belongs to the table it writes to.
+
+   It used to be a `.formrow` flex box above the table, so the boxes you typed into
+   never lined up with the columns they landed in — two independent width systems that
+   could only agree by accident. Putting the row inside the <table> makes alignment
+   structural. These assertions are what stops it drifting back out.
+   ============================================================ */
+console.log("\n— the entry row is a row of the table");
+
+const ui = boot({}, false, true);
+vm.runInContext(code, ui);
+
+/** Columns a row occupies, counting colspan — a spanning cell still owes its width. */
+function cols(rowHTML) {
+  let n = 0;
+  // The lookahead keeps `<thead>` from counting as a `<th>`.
+  for (const cell of rowHTML.match(/<t[dh](?=[\s>])[^>]*>/g) || []) {
+    const cs = /colspan="(\d+)"/i.exec(cell);
+    n += cs ? Number(cs[1]) : 1;
+  }
+  return n;
+}
+const addRow = html => (/<tr class="add">[\s\S]*?<\/tr>/.exec(html) || [""])[0];
+const headRow = html => (/<thead>[\s\S]*?<\/thead>/.exec(html) || [""])[0];
+
+for (const [view, render, fields] of [
+  ["#v-expenses", "renderExpenses", ["e-date", "e-desc", "e-sup", "e-amt", "e-wp", "e-cat", "e-basis"]],
+  ["#v-assets",   "renderAssets",   ["a-desc", "a-sup", "a-date", "a-cost", "a-wp", "a-cat"]],
+  ["#v-income",   "renderIncome",   ["i-date", "i-type", "i-hold", "i-amt"]]
+]) {
+  vm.runInContext(render + "();", ui);
+  const html = ui.DOM[view].innerHTML;
+  const row = addRow(html), head = headRow(html);
+
+  t(render + ": the entry row is inside the table",
+    row !== "" && html.indexOf("<table") < html.indexOf(row),
+    row === "" ? "no tr.add found" : "outside the table", "inside <table>");
+  t(render + ": one entry cell per column", cols(row) === cols(head),
+    cols(row) + " cells", cols(head) + " columns");
+  t(render + ": no .formrow above the table", html.indexOf("formrow") === -1,
+    html.indexOf("formrow") === -1 ? "none" : "still there", "none");
+  for (const id of fields)
+    t(render + ": " + id + " is in the entry row", row.indexOf('id="' + id + '"') !== -1,
+      "missing", "present");
+}
+
+// The basis is the field that survives an audit; it has to be enterable at the moment
+// you still remember the answer, not only afterwards on the row.
+const ex = boot({}, false, true);
+vm.runInContext(code, ex);
+vm.runInContext(`
+  DOM_SET = (s, v) => { document.querySelector(s).value = v; };
+  DOM_SET('#e-amt', '42'); DOM_SET('#e-desc', 'router');
+  DOM_SET('#e-sup', 'Netgear'); DOM_SET('#e-basis', 'shared with the home office');
+  addExpense();
+`, ex);
+t('the entry row can set a basis',
+  vm.runInContext("M.expenses[M.expenses.length-1].basis", ex) === 'shared with the home office',
+  vm.runInContext("M.expenses[M.expenses.length-1].basis", ex), 'shared with the home office');
+t('and clears it for the next entry',
+  vm.runInContext("document.querySelector('#e-basis').value", ex) === "",
+  vm.runInContext("document.querySelector('#e-basis').value", ex), '""');
 
 console.log("\n" + R.pass + " passed, " + R.fail + " failed\n");
 process.exit(R.fail ? 1 : 0);

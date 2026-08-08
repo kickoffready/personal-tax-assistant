@@ -48,6 +48,9 @@
   .dot.clean { background:var(--ok); }
   .spacer { flex:1; }
   .yearpick { font-family:var(--mono); font-size:12px; padding:5px 8px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); }
+  .yearpick:disabled { color:var(--muted); background:var(--surface-2); cursor:not-allowed; opacity:1; }
+  .yearlock { font-family:var(--mono); font-size:11px; padding:5px 7px; margin-left:-8px; }
+  .yearlock.on { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 
   button { font-family:var(--sans); font-size:12.5px; padding:6px 11px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); cursor:pointer; }
   button:hover { border-color:var(--muted); }
@@ -81,6 +84,12 @@
   tr.grp-item > td { padding-left:22px; }
   tr.grp-item > td:first-child { border-left:2px solid var(--accent); }
   tbody tr:hover { background:var(--surface-2); }
+  /* The entry row lives inside the table so its inputs share the columns they write
+     to — alignment by construction, not by matching widths in two places. */
+  tr.add > td { background:var(--surface-2); border-bottom:2px solid var(--rule); }
+  tr.add input, tr.add select { border:1px solid var(--rule); background:var(--surface); }
+  tr.add input + input { margin-top:3px; }
+  tr.add td.auto { color:var(--muted); font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
   td.n, th.n { text-align:right; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
   td.mono { font-family:var(--mono); font-size:12px; }
   tr.sub td { background:var(--surface-2); color:var(--muted); font-size:12.5px; }
@@ -164,6 +173,7 @@
     <span class="filestate"><span class="dot" id="dot"></span><span id="fstate">no file loaded</span></span>
     <span class="spacer"></span>
     <select class="yearpick" id="yearpick" aria-label="Income year"></select>
+    <button class="yearlock" id="yearlock" aria-pressed="false"></button>
     <button id="btnLoad">Open…</button>
     <button id="btnImport">Import…</button>
     <button class="primary" id="btnSave">Save ledger</button>
@@ -297,32 +307,50 @@ const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part
    ============================================================ */
 
 function emptyModel() {
-  return { schema:2, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+  return { schema:3, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
 }
 
 // schema 1 stored work use as a fraction (0.7). schema 2 stores it as a percentage (70),
-// because that is how it is written on a return and how people say it out loud. Old files
-// still load: convert once, on the way in.
+// because that is how it is written on a return and how people say it out loud.
+// schema 3 drops four fields nothing ever read back — serial, evidence path, taxable
+// income and PAYG withheld. A field that no calculation, check, view or export consumes
+// is typing asked for and then thrown away, and leaving it in the file implies it is
+// doing work. Old files still load: convert once, on the way in.
 function migrate(m){
-  if (!m || (num(m.schema) || 1) >= 2) return m;
-  const up = v => num(v) * 100;
-  (m.expenses || []).forEach(e => { if (e.work_pct !== undefined) e.work_pct = up(e.work_pct); });
-  (m.assets || []).forEach(a => {
-    if (a.work_pct === undefined) return;
-    if (typeof a.work_pct === "object" && a.work_pct)
-      Object.keys(a.work_pct).forEach(k => a.work_pct[k] = up(a.work_pct[k]));
-    else a.work_pct = up(a.work_pct);
-  });
-  m.schema = 2;
+  if (!m) return m;
+  const v = num(m.schema) || 1;
+  if (v < 2) {
+    const up = x => num(x) * 100;
+    (m.expenses || []).forEach(e => { if (e.work_pct !== undefined) e.work_pct = up(e.work_pct); });
+    (m.assets || []).forEach(a => {
+      if (a.work_pct === undefined) return;
+      if (typeof a.work_pct === "object" && a.work_pct)
+        Object.keys(a.work_pct).forEach(k => a.work_pct[k] = up(a.work_pct[k]));
+      else a.work_pct = up(a.work_pct);
+    });
+  }
+  if (v < 3) {
+    (m.assets || []).forEach(a => { delete a.serial; delete a.evidence; });
+    (m.years  || []).forEach(y => { delete y.taxable_income; delete y.payg_withheld; });
+  }
+  m.schema = 3;
   return m;
 }
 let M = emptyModel();
 let derived = null;
 let activeYear = null;
+// The year picker is not only a filter. Setting an asset's work-use % writes to
+// work_pct[activeYear], and every field on the Year tab writes to that year's record —
+// so a stray click on the dropdown silently redirects the next thing you type into a
+// return you already lodged. The lock pins the year while you work in it.
+let yearLocked = false;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
 let openGroups = {};    // supplier -> true when an expense group is expanded
-let lastImport = null;  // {at, plan} of the most recent import, for the Data tab
+// {at, from, summary, added:{expenses,income,assets,years}} of the most recent import.
+// Holds ids rather than row references so it survives the autosave, which is what lets
+// you undo an import after a reload or a crash. Nulled the moment M is replaced.
+let lastImport = null;
 let fileName = null;
 let dirty = false;
 let recoveredAt = null;   // timestamp of a restored draft, null if none
@@ -349,7 +377,12 @@ function fyOf(dateStr){
 function fyStart(fy){ return d(fy.slice(0,4) + "-07-01"); }
 function fyEnd(fy){ return d((parseInt(fy.slice(0,4),10)+1) + "-06-30"); }
 function fyNext(fy){ const s = parseInt(fy.slice(0,4),10)+1; return s + "-" + String(s+1).slice(2); }
+function fyPrev(fy){ const s = parseInt(fy.slice(0,4),10)-1; return s + "-" + String(s+1).slice(2); }
 function fyLabel(fy){ return fy.slice(0,4) + "–" + fy.slice(5); }
+// The year you are reporting on is not the year you are standing in. A return covers a
+// year that has finished, so from 1 July it is the one that just closed: in August 2026
+// you are lodging FY2025-26, not the FY2026-27 you are living through.
+function reportingYear(today){ return fyPrev(fyOf(today || todayISO())); }
 function daysBetween(a,b){ return Math.round((b-a)/86400000) + 1; }
 function daysHeldIn(fy, purchase, disposal){
   const s = fyStart(fy), e = fyEnd(fy);
@@ -922,35 +955,65 @@ function render(){
     // still land on its latest entered year rather than jumping four returns ahead.
     const entered = enteredYears();
     activeYear = entered[entered.length-1] || derived.years[derived.years.length-1];
+    // The year being locked to has just gone — deleting its last row, or opening a
+    // different file. A lock that quietly re-points at another year is worse than none.
+    yearLocked = false;
   }
   renderRecovery();
   renderTopbar(); renderLodgment(); renderAssets(); renderExpenses();
   renderIncome(); renderYear(); renderData();
 }
 
+// Stacked rather than exclusive: crashing straight after a bad import is one situation,
+// not two, and it is the one where you most need both banners on screen at once.
 function renderRecovery(){
-  const el = $("#recovery");
+  const out = [];
   if (recoveredAt) {
-    el.innerHTML = `<div class="note aside" style="margin-top:16px">
+    out.push(`<div class="note aside" style="margin-top:16px">
       <b>Recovered draft — not yet in a file</b>
       <p>This page reopened with work autosaved <strong>${ageText(recoveredAt)}</strong>${fileName?` against <code>${esc(fileName)}</code>`:""}.
       It exists only in this browser. Save it to a ledger file, or discard it.</p>
       <p style="margin-top:10px;display:flex;gap:8px">
         <button class="primary" onclick="saveFile()">Save to ledger file</button>
         <button class="danger" onclick="discardRecovery()">Discard draft</button>
-      </p></div>`;
+      </p></div>`);
   } else if (!autosaveOK) {
-    el.innerHTML = `<div class="note warn" style="margin-top:16px">
+    out.push(`<div class="note warn" style="margin-top:16px">
       <b>Crash recovery unavailable</b>
       <p>This browser refused to store an autosave — private browsing, a full quota, or a
       restricted <code>file://</code> origin. Nothing is being kept between reloads.
-      Save to a ledger file often; there is no net underneath you.</p></div>`;
-  } else el.innerHTML = "";
+      Save to a ledger file often; there is no net underneath you.</p></div>`);
+  }
+  if (lastImport) {
+    out.push(`<div class="note aside" style="margin-top:16px">
+      <b>Just imported — check before you claim</b>
+      <p><strong>${lastImport.summary.total} row(s)</strong> added${lastImport.from?` from <code>${esc(lastImport.from)}</code>`:""}
+      <strong>${ageText(lastImport.at)}</strong>. Imported work use is whatever the file said.
+      Undo removes only what this import added — anything you entered or edited yourself stays.</p>
+      <p style="margin-top:10px;display:flex;gap:8px">
+        <button class="danger" onclick="undoLastImport()">Undo this import</button>
+        <button onclick="dismissImport()">Keep them</button>
+      </p></div>`);
+  }
+  $("#recovery").innerHTML = out.join("");
 }
 
 function renderTopbar(){
   const sel = $("#yearpick");
   sel.innerHTML = derived.years.map(y => `<option value="${y}"${y===activeYear?" selected":""}>FY ${fyLabel(y)}</option>`).join("");
+  sel.disabled = yearLocked;
+  const lk = $("#yearlock");
+  const target = reportingYear();
+  const canLock = derived.years.includes(target);
+  lk.className = "yearlock" + (yearLocked ? " on" : "");
+  lk.disabled = !yearLocked && !canLock;
+  lk.textContent = yearLocked ? "🔒 " + fyLabel(activeYear) : "🔓 lock to " + fyLabel(target);
+  lk.setAttribute("aria-pressed", String(yearLocked));
+  lk.title = yearLocked
+    ? "FY " + fyLabel(activeYear) + " is pinned — work-use percentages and year settings can only be written to this year. Click to unlock."
+    : canLock
+      ? "Jump to FY " + fyLabel(target) + " — the return now being prepared — and pin the picker there."
+      : "Nothing recorded in FY " + fyLabel(target) + " yet, so there is no reporting year to lock to.";
   $("#dot").className = "dot " + (dirty ? "dirty" : (fileName ? "clean" : ""));
   $("#fstate").textContent = fileName
     ? fileName + (dirty ? " — unsaved changes" : " — saved")
@@ -1050,19 +1113,6 @@ function renderAssets(){
     <h2>Assets</h2>
     <p class="sub">One row per item, ever. Treatment is decided by cost, not by how much you use it for work. Rows are never deleted on disposal — set a disposal date instead, so the trail and the retention clock survive.</p>
 
-    <div class="formrow">
-      <div class="fld"><label>Description</label><input id="a-desc" placeholder="14&quot; laptop"></div>
-      <div class="fld"><label>Supplier</label><input id="a-sup"></div>
-      <div class="fld"><label>Purchase date</label><input id="a-date" type="date" value="${todayISO()}"></div>
-      <div class="fld"><label>Cost (incl)</label><input id="a-cost" class="n" type="number" step="0.01"></div>
-      <div class="fld"><label>Work use %</label><input id="a-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
-      <div class="fld"><label>Category</label><select id="a-cat">
-        <option value="">suggest from description</option>
-        ${knownCategories("assets").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
-      </select></div>
-      <button class="primary" onclick="addAsset()">Add asset</button>
-    </div>
-
     <div class="tw"><table>
       <thead><tr>
         <th>ID</th><th>Description</th><th>Purchased</th><th class="n">Cost</th>
@@ -1070,12 +1120,30 @@ function renderAssets(){
         <th class="n">Opening</th><th class="n">Decline</th><th class="n">Claim</th><th class="n">Closing</th>
         <th>Keep until</th><th></th>
       </tr></thead>
-      <tbody>${rows.length ? rows.map(a => {
+      <tbody>
+        <tr class="add">
+          <td class="auto" title="Allocated in sequence when the row is added.">auto</td>
+          <td><input id="a-desc" placeholder="14&quot; laptop">
+              <input id="a-sup" placeholder="supplier"></td>
+          <td><input id="a-date" type="date" value="${todayISO()}"></td>
+          <td class="n"><input id="a-cost" class="n" type="number" step="0.01" placeholder="incl. GST"></td>
+          <td><select id="a-cat">
+            <option value="">from description</option>
+            ${knownCategories("assets").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+          </select></td>
+          <td class="auto" title="Decided by cost: ${money(IMMEDIATE_THRESHOLD)} or under is written off at once, under ${money(POOL_CEILING)} is pooled, the rest is depreciated on a schedule.">by cost</td>
+          <td class="n auto">auto</td>
+          <td class="auto">auto</td>
+          <td class="n"><input id="a-wp" class="n" type="number" step="5" min="0" max="100" value="100"></td>
+          <td class="auto" colspan="5" title="Recomputed from cost and purchase date every time the file is opened — never stored.">derived</td>
+          <td><button class="primary" onclick="addAsset()">Add</button></td>
+        </tr>
+        ${rows.length ? rows.map(a => {
         const dr = derived.dep.find(r => r.asset_id === a.asset_id && r.year === activeYear);
         const imm = a.treatment === "immediate" && fyOf(a.purchase_date) === activeYear;
         const pooled = a.treatment === "pool";
         return `<tr>
-          <td class="mono"><button class="tiny" onclick="toggleAsset('${a.asset_id}')" title="Show serial, evidence, basis and disposal">${openAsset===a.asset_id?"▾":"▸"} ${esc(a.asset_id)}</button></td>
+          <td class="mono"><button class="tiny" onclick="toggleAsset('${a.asset_id}')" title="Show supplier, basis and disposal">${openAsset===a.asset_id?"▾":"▸"} ${esc(a.asset_id)}</button></td>
           <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
@@ -1136,9 +1204,7 @@ function assetDetail(a){
       </div>
     </div>
     <div class="formrow" style="margin:0">
-      ${f("serial","Serial / IMEI")}
       ${f("supplier","Supplier")}
-      ${f("evidence","Evidence path")}
       <div class="fld" style="flex:1;min-width:220px"><label>Basis for the work-use %</label>
         <input value="${esc(a.basis)}" placeholder="why this percentage, decided when"
           onchange="setField('assets','${a.asset_id}','basis',this.value)"></div>
@@ -1159,7 +1225,6 @@ function assetDetail(a){
         <td class="n">${r.days_held}</td><td class="n">${money(r.decline)}</td><td class="n">${pctNum(r.work_pct)}</td>
         <td class="n">${money(r.deductible)}</td><td class="n">${money(r.closing)}</td></tr>`).join("")}</tbody>
     </table></div>` : ""}
-    <p class="sub" style="margin:10px 0 0;font-size:12.5px">Name the evidence file after the asset ID — the link then survives a folder reorganisation, and works from either direction.</p>
   </td></tr>`;
 }
 function toggleAsset(id){ openAsset = openAsset === id ? null : id; render(); }
@@ -1228,24 +1293,26 @@ function renderExpenses(){
     <h2>Expenses — FY ${fyLabel(activeYear)}</h2>
     <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum. Work use is a property of the <em>service</em>, not the charge: set it on any row and every charge from that supplier this year follows.</p>
 
-    <div class="formrow">
-      <div class="fld"><label>Date</label><input id="e-date" type="date" value="${todayISO()}"></div>
-      <div class="fld"><label>Description</label><input id="e-desc"></div>
-      <div class="fld"><label>Supplier</label><input id="e-sup"></div>
-      <div class="fld"><label>Amount</label><input id="e-amt" class="n" type="number" step="0.01"></div>
-      <div class="fld"><label>Work use %</label><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></div>
-      <div class="fld"><label>Category</label><select id="e-cat">
-        <option value="">suggest from supplier</option>
-        ${knownCategories("expenses").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
-      </select></div>
-      <button class="primary" onclick="addExpense()">Add expense</button>
-
-    </div>
-
     <div class="tw"><table>
       <thead><tr><th>Service / date</th><th>Description</th><th class="n">Amount</th>
         <th class="n">Work %</th><th class="n">Claimed</th><th>Category</th><th>Label</th><th>Basis</th><th></th></tr></thead>
-      <tbody>${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
+      <tbody>
+        <tr class="add">
+          <td><input id="e-date" type="date" value="${todayISO()}"></td>
+          <td><input id="e-desc" placeholder="description">
+              <input id="e-sup" placeholder="supplier"></td>
+          <td class="n"><input id="e-amt" class="n" type="number" step="0.01" placeholder="0.00"></td>
+          <td class="n"><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></td>
+          <td class="n auto" title="Amount × work use, once the row is added.">on add</td>
+          <td><select id="e-cat">
+            <option value="">from supplier</option>
+            ${knownCategories("expenses").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+          </select></td>
+          <td class="auto" title="Chosen from the supplier and description. Change it on the row afterwards.">auto</td>
+          <td><input id="e-basis" placeholder="why, and how the % was reached"></td>
+          <td><button class="primary" onclick="addExpense()">Add</button></td>
+        </tr>
+        ${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
         : '<tr><td colspan="9" class="empty">No expenses recorded for this year.</td></tr>'}
       </tbody></table></div>`;
 }
@@ -1341,20 +1408,22 @@ function renderIncome(){
     <h2>Income — FY ${fyLabel(activeYear)}</h2>
     <p class="sub">Foreign income is declared gross, before withholding, with the tax withheld claimed separately as an offset. Disposals need an acquisition date so the 12-month discount test can be applied.</p>
 
-    <div class="formrow">
-      <div class="fld"><label>Date</label><input id="i-date" type="date" value="${todayISO()}"></div>
-      <div class="fld"><label>Type</label><select id="i-type">${types.map(t=>`<option>${t}</option>`).join("")}</select></div>
-      <div class="fld"><label>Holding</label><input id="i-hold"></div>
-      <div class="fld"><label>Amount / proceeds</label><input id="i-amt" class="n" type="number" step="0.01"></div>
-      <button class="primary" onclick="addIncome()">Add row</button>
-    </div>
-
     <div class="tw"><table>
       <thead><tr><th>Date</th><th>Type</th><th>Holding</th>
         <th class="n">Franked</th><th class="n">Unfranked</th><th class="n">Credit</th>
         <th class="n">Gross fgn</th><th class="n">FX</th><th class="n">Withheld</th>
         <th>Acquired</th><th class="n">Proceeds</th><th class="n">Cost base</th><th class="n">AUD</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(i => {
+      <tbody>
+        <tr class="add">
+          <td><input id="i-date" type="date" value="${todayISO()}"></td>
+          <td><select id="i-type">${types.map(t=>`<option>${t}</option>`).join("")}</select></td>
+          <td><input id="i-hold" placeholder="holding"></td>
+          <td class="n" colspan="10"><input id="i-amt" class="n" type="number" step="0.01"
+              placeholder="amount / proceeds"
+              title="This lands in the column the type calls for: a dividend fills Franked, foreign income fills Gross fgn, a disposal fills Proceeds. The rest are entered on the row once it exists."></td>
+          <td><button class="primary" onclick="addIncome()">Add</button></td>
+        </tr>
+        ${rows.length ? rows.map(i => {
         const f = (k,step) => `<input class="n" type="number" step="${step||"0.01"}" value="${num(i[k])||""}" onchange="setField('income','${i.id}','${k}',this.value)">`;
         return `<tr>
           <td><input type="date" value="${esc(i.date)}" onchange="setField('income','${i.id}','date',this.value)"></td>
@@ -1412,8 +1481,6 @@ function renderYear(){
     <h3>Reconciliation</h3>
     <div class="panel">
       <div class="formrow" style="margin:0;background:none;border:none;padding:0">
-        <div class="fld"><label>Taxable income</label><input class="n" type="number" step="1" value="${num(y.taxable_income)||""}" ${set("taxable_income")}></div>
-        <div class="fld"><label>PAYG withheld</label><input class="n" type="number" step="1" value="${num(y.payg_withheld)||""}" ${set("payg_withheld")}></div>
         <div class="fld"><label>Marginal + levy</label><input class="n" type="number" step="0.01" value="${num(y.marginal)||0.32}" ${set("marginal")}></div>
         <div class="fld"><label>Assessed result</label><input class="n" type="number" step="0.01" value="${num(y.assessed)||""}" ${set("assessed")}></div>
         <div class="fld"><label>NOA date</label><input type="date" value="${esc(y.noa_date)}" ${set("noa_date")}></div>
@@ -1467,8 +1534,8 @@ function renderData(){
         <dt>Years</dt><dd>${derived.years.length}</dd>
         <dt>Assets · expenses · income</dt><dd>${M.assets.length} · ${M.expenses.length} · ${M.income.length}</dd>
         ${lastImport ? `<dt>Last import</dt><dd>${ageText(lastImport.at)} —
-          ${planSummary(lastImport.plan).total} row(s) added${planSummary(lastImport.plan).skipped
-            ? ", " + planSummary(lastImport.plan).skipped + " skipped as already present" : ""}</dd>` : ""}
+          ${lastImport.summary.total} row(s) added${lastImport.summary.skipped
+            ? ", " + lastImport.summary.skipped + " skipped as already present" : ""}</dd>` : ""}
       </dl>
       <p class="sub" style="margin-top:10px"><b>Open</b> replaces this ledger with a file.
       <b>Import</b> merges rows from one — for converted bank, broker or payment exports — keeping
@@ -1527,8 +1594,8 @@ function addExpense(){
   M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
     supplier: sup, amount: amt, work_pct: num($("#e-wp").value) || 100,
     label: suggestLabel(sup, desc), category: $("#e-cat").value.trim() || suggestCategory(sup, desc),
-    basis: "" });
-  ["#e-desc","#e-sup","#e-amt","#e-cat"].forEach(s => $(s).value = "");
+    basis: ($("#e-basis").value || "").trim() });
+  ["#e-desc","#e-sup","#e-amt","#e-cat","#e-basis"].forEach(s => $(s).value = "");
   touch();
 }
 function addIncome(){
@@ -1554,14 +1621,40 @@ function reconField(label, v){
   y.recon[label] = num(v);
   touch();
 }
+// Rolling forward moves the year deliberately — the button names the year it creates —
+// so the lock travels with it rather than blocking it. What the lock guards against is
+// the accidental change, not the announced one.
+// The only way the year changes by hand. Everything else that moves it — rolling
+// forward, opening a file — is an announced action and deliberately does not come
+// through here. Returns false when the change was refused, so the caller can put the
+// dropdown back where it was.
+function setActiveYear(y){
+  if (yearLocked || !derived.years.includes(y) || y === activeYear) return false;
+  activeYear = y; saveUI(); render(); return true;
+}
+// Locking is not "pin whatever I happen to be looking at" — it is "put me on the return
+// I am actually preparing, and hold me there". So it jumps to the reporting year first.
+// Unlocking leaves you where you are; it releases the year, it does not travel.
+function toggleYearLock(){
+  if (yearLocked) { yearLocked = false; saveUI(); renderTopbar(); return false; }
+  const target = reportingYear();
+  if (!derived.years.includes(target)) return false;
+  const moved = activeYear !== target;
+  activeYear = target;
+  yearLocked = true;
+  saveUI();
+  moved ? render() : renderTopbar();
+  return true;
+}
 function rollForward(){
   const next = fyNext(activeYear);
-  if (M.years.some(y => y.year === next)) { activeYear = next; render(); return; }
+  if (M.years.some(y => y.year === next)) { activeYear = next; saveUI(); render(); return; }
   const cur = yearRec(activeYear);
   const cg = derived.cgt[activeYear];
   M.years.push({ year: next, wfh_method: cur.wfh_method, wfh_hours: 0,
     marginal: cur.marginal, cf_capital_loss: cg ? cg.unusedLoss : 0 });
   activeYear = next;
+  saveUI();
   touch();
 }
 function copyVal(v){
@@ -1681,7 +1774,7 @@ function planImport(parsed){
   return plan;
 }
 
-function applyImport(plan){
+function applyImport(plan, from){
   const takenIds = new Set([...M.expenses, ...M.income].map(r => r.id).filter(Boolean));
   const takenAssets = new Set(M.assets.map(a => a.asset_id).filter(Boolean));
   for (const kind of ["expenses","income"])
@@ -1703,9 +1796,41 @@ function applyImport(plan){
     M.assets.push(a);
   }
   for (const y of plan.years) M.years.push(y);   // never overwrites a year you have set up
-  lastImport = { at: Date.now(), plan };
+  // Recorded after the loops above, because those are where a colliding id is re-keyed —
+  // read the ids any earlier and undo would hunt for rows under names they no longer have.
+  // Ids, not row references: this record has to survive JSON to reach the autosave.
+  const n = plan.add.assets.length + plan.add.expenses.length + plan.add.income.length + plan.years.length;
+  if (n) lastImport = { at: Date.now(), from: from || null, summary: planSummary(plan),
+    added: { expenses: plan.add.expenses.map(r => r.id),
+             income:   plan.add.income.map(r => r.id),
+             assets:   plan.add.assets.map(a => a.asset_id),
+             years:    plan.years.map(y => y.year) } };
   touch();
 }
+
+// The exact inverse of the invariant above: import only ever pushes, so undo only ever
+// removes what it pushed. Nothing you entered, edited or already owned is touched — which
+// is why this is safe to offer for a wrong file rather than making you clear the ledger.
+function undoLastImport(){
+  if (!lastImport) return false;
+  const a = lastImport.added;
+  if (!confirm("Undo the import" + (lastImport.from ? " from " + lastImport.from : "") + "?\n\n" +
+      lastImport.summary.text +
+      "\n\nOnly the rows that import added are removed. Anything you entered or edited\n" +
+      "yourself is untouched, including year settings.")) return false;
+  const drop = (coll, key, ids) => { const s = new Set(ids); M[coll] = M[coll].filter(r => !s.has(r[key])); };
+  drop("expenses", "id", a.expenses);
+  drop("income", "id", a.income);
+  drop("assets", "asset_id", a.assets);
+  const ys = new Set(a.years);
+  M.years = M.years.filter(y => !ys.has(y.year));
+  if (openAsset && !M.assets.some(x => x.asset_id === openAsset)) openAsset = null;
+  lastImport = null;
+  touch();
+  return true;
+}
+// Keeping the rows is a decision too, and it is the one that retires the banner.
+function dismissImport(){ lastImport = null; saveAuto(); render(); }
 
 function planSummary(plan){
   const n = o => o.assets.length + o.expenses.length + o.income.length;
@@ -1752,7 +1877,7 @@ function importFile(file){
     if (!confirm("Import from " + file.name + "?\n\n" + s.text + s.warn +
                  "\n\nExisting rows are kept. Nothing is overwritten." +
                  "\nImported work use is whatever the file says — check it before you claim.")) return;
-    applyImport(plan);
+    applyImport(plan, file.name);
   };
   r.readAsText(file);
 }
@@ -1765,7 +1890,8 @@ function loadFile(file){
       if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
       M = migrate(Object.assign(emptyModel(), parsed));
       ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
-      fileName = file.name; dirty = false; activeYear = null; recoveredAt = null;
+      fileName = file.name; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+      saveUI();
       localStorage.removeItem(AUTOSAVE_KEY);
       render();
     } catch (err) {
@@ -1813,13 +1939,15 @@ function exportCSV(which){
 }
 function resetAll(){
   if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; recoveredAt = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+  saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
 function discardRecovery(){
   if (!confirm("Discard the recovered draft?\n\nAnything entered since your last save is lost. Any ledger file on disk is untouched.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; recoveredAt = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+  saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
@@ -1832,7 +1960,7 @@ function ageText(ms){
 }
 function saveAuto(){
   try {
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ model:M, fileName, at:Date.now() }));
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ model:M, fileName, at:Date.now(), lastImport }));
     autosaveOK = true;
   } catch(e){
     // Safari private browsing, a full quota, or a file:// origin that refuses storage.
@@ -1849,6 +1977,8 @@ function loadAuto(){
     M = migrate(Object.assign(emptyModel(), s.model));
     fileName = s.fileName || null; dirty = true;
     recoveredAt = s.at || null;
+    // A crash right after a bad import is exactly when undo is worth most.
+    lastImport = s.lastImport || null;
     return true;
   } catch(e){ return false; }
 }
@@ -1866,14 +1996,24 @@ function showView(v){
   document.querySelectorAll(".view").forEach(el => el.classList.toggle("on", el.id === "v-" + v));
 }
 function saveUI(){
-  try { localStorage.setItem(UI_KEY, JSON.stringify({ view: activeView, year: activeYear })); } catch(e){}
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ view: activeView, year: activeYear, locked: yearLocked })); } catch(e){}
 }
 function restoreUI(){
   try {
     const s = JSON.parse(localStorage.getItem(UI_KEY) || "null");
     if (!s) return;
-    if (s.year && derived && derived.years.includes(s.year)) activeYear = s.year;
+    // The lock only survives with the year it was set on. Restoring it against whatever
+    // year happens to be active would pin a year nobody chose.
+    let changed = false;
+    if (s.year && derived && derived.years.includes(s.year)) {
+      changed = activeYear !== s.year || yearLocked !== !!s.locked;
+      activeYear = s.year;
+      yearLocked = !!s.locked;
+    }
     if (s.view) showView(s.view);
+    // restoreUI() runs after the first render(), so a restored year has to repaint —
+    // otherwise every view is still showing the year render() guessed at.
+    if (changed) render();
   } catch(e){}
 }
 
@@ -1882,7 +2022,10 @@ $("#tabs").addEventListener("click", e => {
   showView(b.dataset.v);
   saveUI();
 });
-$("#yearpick").addEventListener("change", e => { activeYear = e.target.value; saveUI(); render(); });
+$("#yearpick").addEventListener("change", e => {
+  if (!setActiveYear(e.target.value)) e.target.value = activeYear;
+});
+$("#yearlock").addEventListener("click", toggleYearLock);
 $("#btnLoad").addEventListener("click", () => $("#fileInput").click());
 $("#btnImport").addEventListener("click", () => $("#importInput").click());
 $("#btnSave").addEventListener("click", saveFile);
