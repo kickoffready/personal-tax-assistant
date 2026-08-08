@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Tests for personal/ledger.html          run:  node personal/ledger.test.js
+ * Tests for the personal ledger           run:  node personal/ledger.test.js
  *
- * No dependencies, no framework. The ledger is a single HTML file with no build
- * step, so these tests extract its <script> block and run it in a vm with just
- * enough DOM stubbed for the engine to work. Exits non-zero on any failure.
+ * No dependencies, no framework. The tests run the editable ledger.js source in
+ * a vm with just enough DOM stubbed for the engine to work, and also verify that
+ * the standalone ledger.html artifact embeds that source exactly. Exits non-zero
+ * on any failure.
  *
  * These assertions are the reason to trust the arithmetic. Every rule they check
  * is sourced in personal/RULES.md — when a rate changes, update it there, update
@@ -14,9 +15,18 @@
 const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
+const {
+  END_MARKER,
+  START_MARKER,
+  extractGeneratedSource,
+  normaliseNewlines,
+  normaliseSource,
+  renderLedgerHtml,
+  validateSource
+} = require("./build-ledger.js");
 
 const html = fs.readFileSync(path.join(__dirname, "ledger.html"), "utf8");
-const code = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const code = fs.readFileSync(path.join(__dirname, "ledger.js"), "utf8");
 const ACK_STORAGE_KEY = "tax-ledger-acknowledgement";
 const ACK_VERSION = "2026-08-09.1";
 
@@ -1010,6 +1020,34 @@ t('one year in the model = one row', D.dep.length===1, D.dep.length, 1);
 `;
 vm.runInContext(code + "\n;\n" + ENGINE_TESTS, boot());
 const t = assert;  // the browser-session assertions below run at module scope
+
+/* ============================================================
+   Generated artifact — editable source and standalone page cannot drift.
+   ============================================================ */
+console.log('\n— generated standalone artifact');
+t('the standalone page embeds ledger.js exactly',
+  extractGeneratedSource(html) === normaliseSource(code),
+  'embedded source', 'normalised ledger.js');
+t('regenerating the page is a no-op',
+  renderLedgerHtml(html, code) === normaliseNewlines(html),
+  'rendered page', 'current page');
+t('the standalone page does not load an external script',
+  !/<script\s+[^>]*\bsrc=/i.test(html),
+  'inline script', 'no external script');
+let unsafeSourceError = '';
+try { validateSource('console.log("unsafe");\n</script>'); } catch (error) { unsafeSourceError = error.message; }
+t('the builder rejects source that can close the inline script',
+  /cannot be safely inlined/.test(unsafeSourceError), unsafeSourceError, 'unsafe source error');
+let missingMarkerError = '';
+try { renderLedgerHtml('<script></script>', code); } catch (error) { missingMarkerError = error.message; }
+t('the builder rejects a missing generated marker pair',
+  /exactly one generated marker pair/.test(missingMarkerError), missingMarkerError, 'missing marker error');
+let duplicateMarkerError = '';
+try {
+  renderLedgerHtml(`${START_MARKER}\n${START_MARKER}\n${END_MARKER}`, code);
+} catch (error) { duplicateMarkerError = error.message; }
+t('the builder rejects duplicate generated markers',
+  /found 2 start, 1 end/.test(duplicateMarkerError), duplicateMarkerError, 'duplicate marker error');
 
 /* ============================================================
    First-use acknowledgement — versioned, local and fail-open for the session.

@@ -1,6 +1,6 @@
 # Rules the ledger encodes
 
-`ledger.html` hardcodes a small number of values that are **law, not preference**. This file
+`ledger.js` hardcodes a small number of values that are **law, not preference**. This file
 is the spec for them: what each one is, which income years it applies to, where it came from,
 and what to do when it changes.
 
@@ -89,7 +89,7 @@ line. `treatmentFor()` only ever sees one item's cost, so:
 | what the rule requires | $348.00 | **$65.25** at D6, pooled |
 
 A $282.75 over-claim, silently. Two cables at $58 are genuinely fine — the rule only bites
-once the aggregate passes $300. The comment at `ledger.html:299` has always stated the rule;
+once the aggregate passes $300. The comment beside `IMMEDIATE_THRESHOLD` in `ledger.js` states the rule;
 nothing acts on it. Until something does, check any repeat purchase of identical items by
 hand before lodging.
 
@@ -98,7 +98,7 @@ hand before lodging.
 Three things move together:
 
 1. **This file** — value, income years, and the date you reverified it.
-2. **The constant** in `ledger.html`, whose comment cites the same source.
+2. **The constant** in `ledger.js`, whose comment cites the same source, followed by regenerating `ledger.html`.
 3. **`ledger.test.js`** — a test will already be failing. Update the expected figure only once
    you have confirmed the new value against ato.gov.au, never to make the suite green.
 

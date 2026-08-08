@@ -1,6 +1,6 @@
 # Static ledger tool for the tax repo
 
-> **Status:** built. `personal/ledger.html` implements this design; 461 ledger tests pass.
+> **Status:** built. `personal/ledger.html` implements this design; its ledger test suite passes.
 > **Written:** 6 August 2026
 
 ## Context
@@ -21,7 +21,12 @@ Scope decisions: the tool runs **parallel to the spreadsheet for one income year
 
 ## Architecture
 
-Single self-contained `personal/ledger.html`. No build step, no dependencies, no network. Opens from `file://` or served from GitHub Pages. Scoped to the individual return — the SMSF is a separate area with its own records and reporting.
+The distributable is a single self-contained `personal/ledger.html`: no runtime dependencies,
+no network, and no build step for its user. It opens from `file://` or can be served from GitHub
+Pages. For maintainability, its behaviour is edited in `personal/ledger.js` and inlined into the
+tracked HTML artifact by the dependency-free `personal/build-ledger.js`; there are still no
+modules, imports, bundler or package dependencies. It remains scoped to the individual return —
+the SMSF is a separate area with its own records and reporting.
 
 **Store inputs, derive outputs.** Persist only what a human typed. Everything computed — depreciation rows, `claimed` amounts, AUD conversions, pool balances, lodgment totals — is recalculated on load. A bug fix or schema change then corrects historical years automatically instead of leaving stale numbers behind. This is the single most important design rule in the build.
 
@@ -242,7 +247,9 @@ Each stage leaves the file working and testable.
 
 ## Files
 
-- `personal/ledger.html` — the tool, inside the individual-return area. Nothing publishable lives at the repo root.
+- `personal/ledger.html` — the generated standalone tool users open. Nothing publishable lives at the repo root.
+- `personal/ledger.js` — the editable source for the tool's behaviour.
+- `personal/build-ledger.js` — inlines that source into the tracked HTML artifact; `--check` detects drift without writing.
 - `README.md` and root `index.html` — orientation only; the root index is a directory that links out.
 - `.gitignore` — carries `ledger*.json`, `*.csv` and `evidence/`.
 - `personal/bookkeeping-runbook.html` §02 is the normative schema the tool implements.
@@ -258,6 +265,7 @@ the Iowan/system/mono stack) so it reads as part of the same collection.
 4. **Derivation** — hand-edit a `work_pct` in the JSON, reload, and confirm every dependent figure recomputes rather than persisting stale.
 5. **Integrity** — feed each known-bad pattern (over-$300 immediate, mixed FX, duplicated income rows) and confirm the matching warning fires.
 6. **Automation boundary** — confirm nothing invents a Deductible %; blank and out-of-range manual values are rejected; suggestions stay editable; a % set once carries forward across years; changing it without a `basis` note warns; and selecting the fixed rate for a year hides the per-category percentage inputs rather than asking for both.
-7. **Lodgment totals** — every label total must equal the sum of its expanded supporting rows, and match a hand-check for at least one label.
-8. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
-9. **Reconciliation** — run the spreadsheet's totals for the parallel year through the panel and account for every difference before the tool takes over.
+7. **Generated artifact** — run `node personal/build-ledger.js --check`; the test suite also compares the embedded script with `personal/ledger.js` and rejects missing, duplicate or unsafe build markers.
+8. **Lodgment totals** — every label total must equal the sum of its expanded supporting rows, and match a hand-check for at least one label.
+9. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
+10. **Reconciliation** — run the spreadsheet's totals for the parallel year through the panel and account for every difference before the tool takes over.
