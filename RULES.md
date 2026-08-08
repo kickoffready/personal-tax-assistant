@@ -8,7 +8,7 @@ Making them configurable would only let you quietly get them wrong, so they are 
 The cost of that choice is this document — when a rate changes, three things must move
 together, and a test is there to stop you moving only one.
 
-> **Verified against ato.gov.au on 6 August 2026.** Reverify each tax time.
+> **Verified against ato.gov.au on 8 August 2026.** Reverify each tax time.
 
 ## The constants
 
@@ -28,12 +28,14 @@ together, and a test is there to stop you moving only one.
 | --- | --- | --- |
 | Work-use unit | `workPctFor()` / `wpFrac()` | Stored and entered as a **percentage 0–100**, never a fraction. `wpFrac()` converts where the arithmetic needs a multiplier. Schema 1 files stored fractions; `migrate()` multiplies by 100 on load and bumps to schema 2. Note `WFH_FIXED_RATE` (0.70) is **70c per hour**, not a percentage — it must not be converted. |
 | Work use before it was recorded | `workPctFor()` | A percentage set in a later year applies backwards to earlier years the asset was held. Falling through to 100% silently claimed the full cost — reachable by moving a purchase date back a year. |
+| Pooled taxable use | `poolTaxablePct()` / `setAssetWorkPct()` | A pooled asset uses one reasonable taxable-use estimate made when it is allocated, covering its effective life. It cannot vary by year. The pool control always edits that allocation estimate and removes redundant later percentages. |
 | One service, one percentage | `setField()` / `setGroupField()` | Setting work use on any expense applies it to every charge from the same supplier in that year. Apportionment is a property of the service, not the charge. |
 | Treatment from cost | `treatmentFor()` | ≤$300 immediate · $301–999 pool · ≥$1,000 individual schedule. The test is the item's **cost**, never the work-use share. |
 | Prime cost | `derive()` | `cost × (days held ÷ 365) × (100% ÷ effective life)` |
 | Diminishing value | `derive()` | `opening × (days held ÷ 365) × (200% ÷ effective life)` |
 | CGT ordering | `computeCGT()` | Current-year losses first, applied to gains **not** eligible for the discount before those that are; then carried-forward losses; then the 50% discount. Order matters: a dollar of loss offsets a full dollar of undiscounted gain but effectively only 50c of a discounted one. |
 | Balancing adjustment | `derive()` | On disposal, proceeds against remaining adjustable value. Above it is assessable at item 24, below it is deductible at D5. |
+| Pooled disposal | `derive()` / `buildLodgment()` | In the disposal year, taxable-use percentage × termination value reduces the closing pool balance after the year's deduction. The pool cannot go below zero; any excess is assessable at item 24. |
 | Retention | `derive()` | The later of: 5 years from lodgment, 5 years from the **last claim for decline in value**, and for a CGT asset 5 years after no CGT event can happen. |
 | Retention, pooled assets | `derive()` | Its own rule: 5 years from the **end of the income year the asset was allocated to the pool** — not from the purchase date, and not from the pool's last deduction. A pool keeps deducting for a decade; the record obligation for one asset in it does not. The same end-of-year base is used for immediate write-offs, which also produce no per-asset claim row. |
 | Import identity | `rowKeys()` | A row carries two identities: `source`+`source_ref` when a converter supplies them, and a hash of the fields that define the charge (date · supplier · amount). A match on **either** is a duplicate, so converters that do and do not emit transaction IDs still recognise the same charge. `gmail` is the first such source, using the Gmail message ID — unique and permanent within an account, so re-running the converter cannot double-claim. The fallback can only err toward treating two identical same-day charges as one — under-claiming is recoverable, double-claiming is an amendment. |
@@ -46,6 +48,8 @@ together, and a test is there to stop you moving only one.
 | Import never replaces | `planImport()` / `applyImport()` | **Open** replaces the ledger; **Import** merges. Existing rows are never overwritten, colliding `id`/`asset_id` values are re-keyed, and a year record you have already set up is left alone. Every import is previewed with counts before it is applied. |
 | Pool is one-way | `runChecks()` | Once a pool exists, later low-cost assets must be pooled. Flagged, not silently corrected. |
 | Financial year | `fyOf()` | 1 July to 30 June. A 30 June transaction belongs to the year ending that day. |
+| Converters route on the $300 hinge | `personal/IMPORT-FORMAT.md` | A converter chooses `assets` or `expenses`, and that choice decides *which year* the money is claimed. Below $300 both collections claim the whole amount in the same year, so the question does not arise and the row goes to `expenses`. Above $300 a **thing** goes to `assets`, and so does a row the converter **cannot classify** — a thing wrongly expensed claims its full cost this year (an over-claim, and an amendment), while a service wrongly capitalised only under-claims and is fixed by moving the row. The issuer never decides the kind: Apple bills both a cloud plan and a MacBook. |
+| Imported assets must carry `work_pct` | `workPctFor()` | An asset with no `work_pct` is read as **100%**, the only default in the ledger that errs toward over-claiming, and an import is the way it is reached — `addAsset()` always sets one, a converter may not. Asset `work_pct` is an object keyed by financial year (`{"2025-26": 0}`), unlike an expense's bare number. Converters emit `0`, as everywhere else: a parse result is not a claim decision. |
 
 ### Deliberately not encoded
 
