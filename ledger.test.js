@@ -130,7 +130,7 @@ t('an exact year still wins', workPctFor({work_pct:{'2024-25':50,'2026-27':80}},
 console.log('\\n— schema 1 files still load');
 let leg = migrate({schema:1, expenses:[{id:'e',amount:100,work_pct:0.7}],
   assets:[{asset_id:'A',cost:2000,work_pct:{'2024-25':0.8,'2025-26':0.5}},{asset_id:'B',cost:500,work_pct:0.25}]});
-t('schema bumped to 3', leg.schema===3, leg.schema, 3);
+t('schema bumped to 4', leg.schema===4, leg.schema, 4);
 t('expense 0.7 becomes 70', leg.expenses[0].work_pct===70, leg.expenses[0].work_pct, 70);
 t('per-year 0.8 becomes 80', leg.assets[0].work_pct['2024-25']===80, leg.assets[0].work_pct['2024-25'], 80);
 t('a scalar 0.25 becomes 25', leg.assets[1].work_pct===25, leg.assets[1].work_pct, 25);
@@ -153,6 +153,25 @@ t('the claim inputs survive', stripped.assets[0].cost===1890 && stripped.assets[
 t('the basis note survives', stripped.assets[0].basis==='phone, 70% work', stripped.assets[0].basis, 'phone, 70% work');
 t('the year settings survive', stripped.years[0].marginal===0.32 && stripped.years[0].wfh_hours===800,
   stripped.years[0].marginal+'/'+stripped.years[0].wfh_hours, '0.32/800');
+
+// An expense is identified by who you bought from; its description said the same thing
+// twice. An asset's description is load-bearing — suggestLife() reads it — so the strip
+// has to know the difference between the two collections.
+let s4 = migrate({schema:3,
+  expenses:[{id:'e1',date:'2025-09-01',description:'Cloud Plus storage (200GB)',
+    supplier:'Apple',amount:53.88,work_pct:50,label:'D5',basis:'review — needs a rate'}],
+  assets:[{asset_id:'A-1',description:'MacBook Pro',supplier:'Apple',cost:2400,
+    work_pct:{'2025-26':70}}]});
+t('schema bumped to 4 from 3', s4.schema===4, s4.schema, 4);
+t('the expense description is dropped', !('description' in s4.expenses[0]),
+  Object.keys(s4.expenses[0]).join(','), 'no description');
+t('the asset description is not', s4.assets[0].description==='MacBook Pro',
+  s4.assets[0].description, 'MacBook Pro');
+t('the expense keeps what identifies it',
+  s4.expenses[0].supplier==='Apple' && s4.expenses[0].amount===53.88 && s4.expenses[0].work_pct===50,
+  [s4.expenses[0].supplier,s4.expenses[0].amount,s4.expenses[0].work_pct].join('/'), 'Apple/53.88/50');
+t('and the review note it arrived with', s4.expenses[0].basis==='review — needs a rate',
+  s4.expenses[0].basis, 'review — needs a rate');
 
 console.log('\\n— one service, one percentage');
 setModel({years:[{year:'2025-26'}], expenses:[
@@ -754,8 +773,8 @@ t('actual cost claims no hourly amount', !(D.lodgment['2025-26'].deductions.D5),
 console.log('\\n— integrity checks');
 setModel({years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:100,marginal:0.37}],
   assets:[{asset_id:'A-4',description:'laptop',purchase_date:'2025-08-01',cost:1890,treatment:'immediate',work_pct:{'2025-26':70}}],
-  expenses:[{id:'e3',date:'2025-09-01',description:'water bill',amount:200,work_pct:20,label:'D5'},
-            {id:'e4',date:'2025-09-01',description:'internet',supplier:'telco',amount:900,work_pct:70,label:'D5'}],
+  expenses:[{id:'e3',date:'2025-09-01',supplier:'Sydney Water',category:'Water and council rates',amount:200,work_pct:20,label:'D5'},
+            {id:'e4',date:'2025-09-01',supplier:'telco',category:'Information services',amount:900,work_pct:70,label:'D5'}],
   income:[{id:'i1',type:'foreign',date:'2025-09-01',holding:'X',gross_foreign:100,fx_rate:1.47},
           {id:'i2',type:'foreign',date:'2025-10-01',holding:'Y',gross_foreign:100,fx_rate:0.68}]});
 D=derive(); const w=D.warnings.map(x=>x.title).join(' | ');
@@ -765,6 +784,60 @@ D=derive(); const w=D.warnings.map(x=>x.title).join(' | ');
  [/both sides of 1\\.0/,'mixed FX conventions flagged'],
  [/omits the Medicare levy/,'bare marginal rate flagged']]
  .forEach(([re,name])=>t(name, re.test(w), '', 'flag'));
+
+// Both work-from-home checks used to read a typed description. They now read the category
+// and the supplier, so they fire on what a row IS rather than on whether you happened to
+// type the giveaway word.
+console.log('\\n— the WFH checks read the category, not free text');
+setModel({years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:100}],
+  expenses:[{id:'p1',date:'2025-09-01',supplier:'Acme Utilities',category:'Energy',amount:400,work_pct:50,label:'D5'}]});
+t('an energy row is caught by its category alone',
+  /covered by the 70c/.test(derive().warnings.map(x=>x.title).join('|')), '', 'flag');
+setModel({years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:100}],
+  expenses:[{id:'p2',date:'2025-09-01',supplier:'SW Corp',category:'Water and council rates',amount:200,work_pct:50,label:'D5'}]});
+t('so is a water row under a merchant name that hides it',
+  /outside the permitted/.test(derive().warnings.map(x=>x.title).join('|')), '', 'flag');
+setModel({years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:100}],
+  expenses:[{id:'p3',date:'2025-09-01',supplier:'Union',category:'Professional memberships',amount:600,work_pct:100,label:'D5'}]});
+t('and an unrelated row is left alone',
+  !/covered by the 70c|outside the permitted/.test(derive().warnings.map(x=>x.title).join('|')), '', 'silent');
+
+// The Basis column is gone, so the converter's review note has to reach you some other
+// way. A count alone would not: "needs a rate" and "receipt not itemised" want different
+// fixes, so the reason is carried into the warning.
+console.log('\\n— imported rows that still need a human');
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'r1',date:'2025-09-01',supplier:'Optus',amount:300,work_pct:0,label:'D5',
+   basis:'review — prices in a currency other than AUD; needs a rate'},
+  {id:'r2',date:'2025-09-02',supplier:'Coles',amount:88.2,work_pct:0,label:'D5',
+   basis:'review — receipt not itemised'},
+  {id:'r3',date:'2025-09-03',supplier:'Union',amount:600,work_pct:100,label:'D5',
+   basis:'deductible in full, checked 9 Aug'}]});
+const rv = derive().warnings.find(x => /still needs? review/.test(x.title));
+t('the unreviewed rows are counted', /2 imported expenses still need review/.test(rv ? rv.title : ''),
+  rv ? rv.title : 'no warning', '2 imported expenses');
+t('each reason survives', /needs a rate/.test(rv.detail) && /receipt not itemised/.test(rv.detail),
+  rv.detail, 'both reasons');
+t('and the rows are named', /Optus \\$300\\.00/.test(rv.detail) && /Coles \\$88\\.20/.test(rv.detail),
+  rv.detail, 'supplier and amount');
+t('a basis you wrote yourself is not a review note', !/checked 9 Aug/.test(rv.detail),
+  rv.detail, 'Union excluded');
+
+// description used to be the second half of the expense dedupe key. Without it, two
+// same-day same-amount charges are told apart by supplier alone — so supplier has to be
+// enough, and it is.
+console.log('\\n— two charges on one day are still two charges');
+setModel({years:[{year:'2025-26'}], expenses:[]});
+activeYear='2025-26';
+applyImport(planImport({schema:4, expenses:[
+  {id:'x1',date:'2025-09-01',supplier:'Optus',amount:25,work_pct:0,label:'D5'},
+  {id:'x2',date:'2025-09-01',supplier:'Cloudflare',amount:25,work_pct:0,label:'D5'}]}));
+t('different suppliers, same day and amount, both land', M.expenses.length===2,
+  M.expenses.length, 2);
+applyImport(planImport({schema:4, expenses:[
+  {id:'x3',date:'2025-09-01',supplier:'Optus',amount:25,work_pct:0,label:'D5'}]}));
+t('and the same supplier again is still a duplicate', M.expenses.length===2,
+  M.expenses.length, 2);
 
 console.log('\\n— duplicated income across years');
 setModel({years:[{year:'2025-26'},{year:'2026-27'}],income:[
@@ -1078,7 +1151,7 @@ const addRow = html => (/<tr class="add">[\s\S]*?<\/tr>/.exec(html) || [""])[0];
 const headRow = html => (/<thead>[\s\S]*?<\/thead>/.exec(html) || [""])[0];
 
 for (const [view, render, fields] of [
-  ["#v-expenses", "renderExpenses", ["e-date", "e-desc", "e-sup", "e-amt", "e-wp", "e-cat", "e-basis"]],
+  ["#v-expenses", "renderExpenses", ["e-sup", "e-date", "e-amt", "e-wp", "e-cat"]],
   ["#v-assets",   "renderAssets",   ["a-desc", "a-sup", "a-date", "a-cost", "a-wp", "a-cat"]],
   ["#v-income",   "renderIncome",   ["i-date", "i-type", "i-hold", "i-amt"]]
 ]) {
@@ -1098,22 +1171,35 @@ for (const [view, render, fields] of [
       "missing", "present");
 }
 
-// The basis is the field that survives an audit; it has to be enterable at the moment
-// you still remember the answer, not only afterwards on the row.
+// The supplier is what the whole view is built on — the group key, the lodgment
+// breakdown line, half the import identity, and the only input left for guessing a label
+// and a category. A charge without one is a charge nothing downstream can reason about,
+// so it is refused at the door rather than accepted and worked around later.
 const ex = boot({}, false, true);
 vm.runInContext(code, ex);
 vm.runInContext(`
   DOM_SET = (s, v) => { document.querySelector(s).value = v; };
-  DOM_SET('#e-amt', '42'); DOM_SET('#e-desc', 'router');
-  DOM_SET('#e-sup', 'Netgear'); DOM_SET('#e-basis', 'shared with the home office');
+  DOM_SET('#e-amt', '42'); DOM_SET('#e-sup', '');
   addExpense();
 `, ex);
-t('the entry row can set a basis',
-  vm.runInContext("M.expenses[M.expenses.length-1].basis", ex) === 'shared with the home office',
-  vm.runInContext("M.expenses[M.expenses.length-1].basis", ex), 'shared with the home office');
-t('and clears it for the next entry',
-  vm.runInContext("document.querySelector('#e-basis').value", ex) === "",
-  vm.runInContext("document.querySelector('#e-basis').value", ex), '""');
+t('a charge with no supplier is refused', vm.runInContext("M.expenses.length", ex) === 0,
+  vm.runInContext("M.expenses.length", ex), 0);
+
+vm.runInContext(`DOM_SET('#e-amt', ''); DOM_SET('#e-sup', 'Netgear'); addExpense();`, ex);
+t('and so is one with no amount', vm.runInContext("M.expenses.length", ex) === 0,
+  vm.runInContext("M.expenses.length", ex), 0);
+
+vm.runInContext(`DOM_SET('#e-amt', '42'); DOM_SET('#e-sup', 'Optus'); addExpense();`, ex);
+t('with both, the row is added', vm.runInContext("M.expenses.length", ex) === 1,
+  vm.runInContext("M.expenses.length", ex), 1);
+t('the category is still guessed from the supplier alone',
+  vm.runInContext("M.expenses[0].category", ex) === 'Information services',
+  vm.runInContext("M.expenses[0].category", ex), 'Information services');
+t('and no description is stored', !vm.runInContext("('description' in M.expenses[0])", ex),
+  vm.runInContext("Object.keys(M.expenses[0]).join(',')", ex), 'no description');
+t('the supplier clears for the next entry',
+  vm.runInContext("document.querySelector('#e-sup').value", ex) === "",
+  vm.runInContext("document.querySelector('#e-sup').value", ex), '""');
 
 /* ============================================================
    Moving a row between Expenses and Assets.
@@ -1179,8 +1265,14 @@ t('the expense is gone', vm.runInContext("M.expenses.length", one) === 0,
 
 // The two taxonomies are disjoint by design — a laptop is never an Information service.
 // Carrying the category across would put a value in the picker the picker does not offer.
-t('the category is re-derived in the asset taxonomy',
-  A("category") === "Peripherals", A("category"), 'Peripherals (was "Software and subscriptions")');
+// Since an expense has no description, only the supplier is left to classify by, and a
+// merchant name rarely says what was bought: the asset arrives uncategorised rather than
+// miscategorised. Blank is a question the picker can answer; "Software and subscriptions"
+// on an asset is an answer nothing can.
+t('the expense category is not carried across',
+  A("category") !== "Software and subscriptions", A("category"), 'not the expense category');
+t('and a merchant name alone does not classify a thing',
+  A("category") === "", JSON.stringify(A("category")), '"" — for you to pick');
 
 // workPctFor() reads a missing work_pct as 100 — the one default that errs toward
 // over-claiming, and a move is a way to reach it.
@@ -1334,8 +1426,8 @@ t('every row asks for the same thing in the same words',
 t('neither needs expanding first', Object.keys(vm.runInContext("openGroups", grp)).length === 0,
   JSON.stringify(vm.runInContext("openGroups", grp)), '{} — nothing expanded');
 t('the group rows still fill every column',
-  (groupRow("Dell").match(/<td/g) || []).length === 9,
-  (groupRow("Dell").match(/<td/g) || []).length, 9);
+  (groupRow("Dell").match(/<td/g) || []).length === 8,
+  (groupRow("Dell").match(/<td/g) || []).length, 8);
 
 // Two cables are two assets, not one $58 asset — the $300 test applies per item.
 vm.runInContext(`sendGroupToAssets("Amazon");`, grp);
@@ -1372,8 +1464,8 @@ t('the group header offers del beside the move',
   delRow("Optus").indexOf("removeGroup('Optus')") !== -1,
   delRow("Optus").indexOf(">del<") !== -1 ? "del present" : "no del", 'a del button');
 t('and the two sit in one cell',
-  (delRow("Optus").match(/<td/g) || []).length === 9,
-  (delRow("Optus").match(/<td/g) || []).length, 9);
+  (delRow("Optus").match(/<td/g) || []).length === 8,
+  (delRow("Optus").match(/<td/g) || []).length, 8);
 
 vm.runInContext(`removeGroup("Optus");`, del);
 t('deleting a group removes every charge in it',

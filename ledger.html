@@ -88,7 +88,6 @@
      to — alignment by construction, not by matching widths in two places. */
   tr.add > td { background:var(--surface-2); border-bottom:2px solid var(--rule); }
   tr.add input, tr.add select { border:1px solid var(--rule); background:var(--surface); }
-  tr.add input + input { margin-top:3px; }
   tr.add td.auto { color:var(--muted); font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
   td.n, th.n { text-align:right; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
   td.mono { font-family:var(--mono); font-size:12px; }
@@ -269,7 +268,12 @@ const CATEGORY_HINTS = {
     [/course|training|conference|seminar|textbook/i, "Self-education"],
     [/insurance|income ?protection/i, "Insurance"],
     [/donation|foundation|charity|appeal/i, "Donations"],
-    [/repair|service|maintenance|consumable|toner|ink|stationery/i, "Repairs and consumables"]
+    [/repair|service|maintenance|consumable|toner|ink|stationery/i, "Repairs and consumables"],
+    // The last two exist so the work-from-home checks have something to read. Energy is
+    // inside the 70c rate; water and council rates are outside the permitted list
+    // entirely. Both are worth naming precisely because neither can be claimed as typed.
+    [/electric|gas|energy|agl|origin ?energy|energy ?australia|synergy|ergon|alinta/i, "Energy"],
+    [/water|council ?rates|shire ?rates/i, "Water and council rates"]
   ],
   assets: [
     [/laptop|macbook|notebook|desktop|imac|workstation|tower|pc\b/i, "Computers"],
@@ -283,6 +287,14 @@ const CATEGORY_HINTS = {
 // Categories that describe a thing rather than a service. An expense wearing one of these
 // above the immediate-deduction threshold is usually an asset entered in the wrong place.
 const ASSET_SHAPED = /computers|phones|tablets|peripherals|furniture|equipment|tools|hardware/i;
+
+// The two work-from-home checks read the category and the supplier, never free text. A
+// controlled vocabulary is the point: "Information services" says what a row is whatever
+// the merchant calls itself, where a typed description said it only if you happened to
+// type the giveaway word. Supplier stays in the hay because a category can be blank.
+function runHay(e){ return (e.category || "") + " " + (e.supplier || ""); }
+const WFH_COVERED = /information services|energy|electric|gas|internet|broadband|phone|mobile|nbn|telstra|optus|vodafone|belong|amaysim|agl|origin|stationery|printer ink|officeworks/i;
+const NOT_RUNNING = /water|rates|council/i;
 const WFH_FIXED_RATE = 0.70;
 
 // Low-value pool. 18.75% in the year of allocation regardless of purchase date,
@@ -314,7 +326,7 @@ const TO_ASSETS = "→ Assets", TO_EXPENSES = "→ Expenses", DELETE_LABEL = "de
    ============================================================ */
 
 function emptyModel() {
-  return { schema:3, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+  return { schema:4, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
 }
 
 // schema 1 stored work use as a fraction (0.7). schema 2 stores it as a percentage (70),
@@ -322,7 +334,11 @@ function emptyModel() {
 // schema 3 drops four fields nothing ever read back — serial, evidence path, taxable
 // income and PAYG withheld. A field that no calculation, check, view or export consumes
 // is typing asked for and then thrown away, and leaving it in the file implies it is
-// doing work. Old files still load: convert once, on the way in.
+// doing work.
+// schema 4 drops an EXPENSE's description. A charge is identified by who you bought from,
+// and "Acme Cloud Plus" then "Cloud Plus storage (200GB)" is the same fact written twice. An
+// ASSET keeps its description — that one is load-bearing, because suggestLife() reads it
+// to guess an effective life. Old files still load: convert once, on the way in.
 function migrate(m){
   if (!m) return m;
   const v = num(m.schema) || 1;
@@ -340,7 +356,10 @@ function migrate(m){
     (m.assets || []).forEach(a => { delete a.serial; delete a.evidence; });
     (m.years  || []).forEach(y => { delete y.taxable_income; delete y.payg_withheld; });
   }
-  m.schema = 3;
+  if (v < 4) {
+    (m.expenses || []).forEach(e => { delete e.description; });
+  }
+  m.schema = 4;
   return m;
 }
 let M = emptyModel();
@@ -497,7 +516,7 @@ function chooseGroupCategory(key, value){
   setGroupField(key, "category", value);
 }
 
-function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }
+function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }   // description: assets only
 
 function treatmentFor(cost){
   const c = num(cost);
@@ -710,7 +729,7 @@ function buildLodgment(fy){
   for (const e of M.expenses) {
     if (fyOf(e.date) !== fy) continue;
     const claimed = num(e.amount) * wpFrac(e.work_pct === undefined ? 100 : e.work_pct);
-    add(out.deductions, e.label || "D5", categoryOf(e), claimed, e.supplier || e.description);
+    add(out.deductions, e.label || "D5", categoryOf(e), claimed, e.supplier);
   }
   // working from home
   const y = M.years.find(x => x.year === fy);
@@ -818,7 +837,7 @@ function supplierIndex(){
     (ix[k] = ix[k] || { fy, sup, sources:{} });
     ix[k].sources[src] = (ix[k].sources[src] || 0) + num(amt);
   };
-  for (const e of M.expenses) put(fyOf(e.date), normaliseSupplier(e.supplier || e.description), sourceOf(e), e.amount);
+  for (const e of M.expenses) put(fyOf(e.date), normaliseSupplier(e.supplier), sourceOf(e), e.amount);
   for (const a of M.assets)   put(fyOf(a.purchase_date), normaliseSupplier(a.supplier || a.description), sourceOf(a), a.cost);
   return ix;
 }
@@ -834,7 +853,7 @@ function runChecks(){
   for (const e of M.expenses) {
     if (!ASSET_SHAPED.test(e.category || "")) continue;
     if (num(e.amount) <= IMMEDIATE_THRESHOLD) continue;
-    push("high", money(num(e.amount)) + " for “" + (e.description || e.supplier || "an expense") + "” is categorised as " + e.category,
+    push("high", money(num(e.amount)) + " for “" + (e.supplier || "an expense") + "” is categorised as " + e.category,
       "That reads like a depreciating asset, but it is entered as an expense, so its whole cost is claimed this year. " +
       "Anything above " + money(IMMEDIATE_THRESHOLD) + " that keeps working next year belongs in Assets, where the cost decides whether it is pooled or scheduled.");
   }
@@ -879,18 +898,27 @@ function runChecks(){
   // fixed rate double-dip
   for (const y of M.years) {
     if (y.wfh_method !== "fixed") continue;
-    const covered = M.expenses.filter(e => fyOf(e.date) === y.year &&
-      /electric|gas|energy|internet|broadband|phone|mobile|nbn|stationery|printer ink/i.test((e.description||"")+" "+(e.supplier||"")));
+    const covered = M.expenses.filter(e => fyOf(e.date) === y.year && WFH_COVERED.test(runHay(e)));
     if (covered.length)
       push("high", fyLabel(y.year) + ": " + covered.length + " expense" + (covered.length>1?"s":"") + " already covered by the 70c fixed rate",
         "Energy, phone, internet and stationery are inside the rate and cannot be claimed separately on top.");
   }
 
   // non-qualifying WFH categories
-  const bad = M.expenses.filter(e => /water|rates|council/i.test((e.description||"")+" "+(e.supplier||"")));
+  const bad = M.expenses.filter(e => NOT_RUNNING.test(runHay(e)));
   if (bad.length)
     push("high", bad.length + " expense" + (bad.length>1?"s":"") + " outside the permitted running-expense categories",
       "Only energy, phone/data/internet, stationery and consumables, cleaning of a dedicated office, and depreciation qualify. Water is not on the list.");
+
+  // Converters cannot finish every row, and say so in `basis`: the FX rate they used, a
+  // refund netted inside the amount, a receipt that was never itemised, an issuer they
+  // could not name. Each needs a different fix, so the reason is reported, not just the
+  // count. This used to be a truncated column you had to notice; now the tool says it.
+  const unreviewed = M.expenses.filter(e => /^review\b/i.test(String(e.basis || "").trim()));
+  if (unreviewed.length)
+    push("med", unreviewed.length + " imported expense" + (unreviewed.length>1?"s still need":" still needs") + " review",
+      unreviewed.map(e => (e.supplier || "unattributed") + " " + money(num(e.amount)) + " — " +
+        String(e.basis).trim().replace(/^review\s*[—–-]?\s*/i, "")).join(" · "));
 
   // mixed FX conventions
   const rates = M.income.map(i => num(i.fx_rate)).filter(r => r > 0);
@@ -1011,7 +1039,10 @@ function claimPreview(cost, wp, fy, desc, life){
 function asAssetRow(e){
   const fy = fyOf(e.date);
   const cost = num(e.amount);
-  const desc = (e.description || e.supplier || "").trim();
+  // An expense has no description to carry, so the asset arrives named after its supplier
+  // and wants renaming. suggestLife() matches item words, not merchants, so the effective
+  // life falls to the 3-year default until it does.
+  const desc = (e.supplier || "").trim();
   return {
     asset_id: allocateAssetId(fy),
     description: desc, supplier: e.supplier || "",
@@ -1030,7 +1061,7 @@ function asExpenseRow(a){
   const desc = (a.description || a.supplier || "").trim();
   return {
     id: uid("e"), date: a.purchase_date,
-    description: desc, supplier: a.supplier || "",
+    supplier: a.supplier || "",
     amount: num(a.cost),
     work_pct: workPctFor(a, fyOf(a.purchase_date)),
     label: suggestLabel(a.supplier, desc),
@@ -1499,13 +1530,14 @@ function renderExpenses(){
     <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum. Work use is a property of the <em>service</em>, not the charge: set it on any row and every charge from that supplier this year follows.</p>
 
     <div class="tw"><table>
-      <thead><tr><th>Service / date</th><th>Description</th><th class="n">Amount</th>
-        <th class="n">Work %</th><th class="n">Claimed</th><th>Category</th><th>Label</th><th>Basis</th><th></th></tr></thead>
+      <thead><tr><th>Supplier</th><th>Date</th><th class="n">Amount</th>
+        <th class="n">Work %</th><th class="n">Claimed</th><th>Category</th><th>Label</th><th></th></tr></thead>
       <tbody>
+        ${/* One control per cell, sitting directly above its counterpart in the rows
+              below. The entry row is the first row of the table, not a form beside it. */""}
         <tr class="add">
+          <td><input id="e-sup" placeholder="supplier"></td>
           <td><input id="e-date" type="date" value="${todayISO()}"></td>
-          <td><input id="e-desc" placeholder="description">
-              <input id="e-sup" placeholder="supplier"></td>
           <td class="n"><input id="e-amt" class="n" type="number" step="0.01" placeholder="0.00"></td>
           <td class="n"><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></td>
           <td class="n auto" title="Amount × work use, once the row is added.">on add</td>
@@ -1513,18 +1545,17 @@ function renderExpenses(){
             <option value="">from supplier</option>
             ${knownCategories("expenses").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
           </select></td>
-          <td class="auto" title="Chosen from the supplier and description. Change it on the row afterwards.">auto</td>
-          <td><input id="e-basis" placeholder="why, and how the % was reached"></td>
+          <td class="auto" title="Chosen from the supplier. Change it on the row afterwards.">auto</td>
           <td><button class="primary" onclick="addExpense()">Add</button></td>
         </tr>
         ${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
-        : '<tr><td colspan="9" class="empty">No expenses recorded for this year.</td></tr>'}
+        : '<tr><td colspan="8" class="empty">No expenses recorded for this year.</td></tr>'}
       </tbody></table></div>`;
 }
 
 // What a charge groups under. Three places derive this and they must never disagree:
 // the view, the write-through editor, and the group move.
-function groupKeyOf(e){ return (e.supplier || e.description || "unattributed").trim(); }
+function groupKeyOf(e){ return (e.supplier || "unattributed").trim(); }
 
 // The register keeps one row per charge — that is what substantiates a claim. What
 // gets grouped is the view of it, so the screen matches the shape of the form.
@@ -1555,7 +1586,7 @@ function groupHTML(g){
     <td><button class="tiny" onclick="toggleGroup('${jsStr(g.key)}')"
         title="${one ? "1 charge" : g.items.length + " charges, " + g.from + " to " + g.to}">${open?"▾":"▸"} ${esc(g.key)}</button>
       ${one ? "" : `<span class="sub" style="font-size:12px"> × ${g.items.length}</span>`}</td>
-    <td class="sub" style="font-size:13px">${esc(one ? (g.items[0].description||"") : g.from + " – " + g.to)}</td>
+    <td class="sub" style="font-size:13px">${esc(one ? g.from : g.from + " – " + g.to)}</td>
     <td class="n"><b>${money(g.amount)}</b></td>
     <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${pct}"
         placeholder="${mixedPct ? "mixed" : ""}"
@@ -1575,7 +1606,6 @@ function groupHTML(g){
       ${mixedLabel ? '<option selected>mixed</option>' : ""}
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
-    <td class="sub" style="font-size:12.5px">${esc((g.items[0].basis||"").slice(0,60))}</td>
     ${/* Every group can be corrected without expanding, whatever its size. The shape of a
           group says nothing about what its charges are — twelve $25 rows are a phone plan,
           two $29 rows are two cables — so the tool suggests and the person decides. Each
@@ -1591,9 +1621,8 @@ function groupHTML(g){
         >${DELETE_LABEL}</button></td></tr>`;
   if (!open) return head;
   return head + g.items.map(e => `<tr class="grp-item">
+    <td><input value="${esc(e.supplier)}" placeholder="supplier" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
     <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
-    <td><input value="${esc(e.description)}" placeholder="description" onchange="setField('expenses','${e.id}','description',this.value)">
-      <input value="${esc(e.supplier)}" placeholder="supplier" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
     <td class="n"><input class="n" type="number" step="0.01" value="${num(e.amount)}" onchange="setField('expenses','${e.id}','amount',this.value)"></td>
     <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${e.work_pct===undefined?100:num(e.work_pct)}"
       title="Changing this here still applies to every ${esc(e.supplier||g.key)} charge this year."
@@ -1603,7 +1632,6 @@ function groupHTML(g){
     <td><select onchange="setField('expenses','${e.id}','label',this.value)">
       ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
     </select></td>
-    <td><input value="${esc(e.basis)}" placeholder="why, and how the % was reached" onchange="setField('expenses','${e.id}','basis',this.value)"></td>
     <td style="white-space:nowrap"><button class="tiny" onclick="sendToAssets('${e.id}')"
         title="This is a thing, not a service — move it to Assets, where the cost decides whether it is written off, pooled or depreciated.">${TO_ASSETS}</button>
       <button class="tiny danger" onclick="removeRow('expenses','${e.id}')">${DELETE_LABEL}</button></td>
@@ -1821,15 +1849,18 @@ function addAsset(){
   ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
   touch();
 }
+// The supplier is required, and not only because it heads the table. It is the group key,
+// the lodgment breakdown line, half the import identity and the whole of the label and
+// category guess. A charge with no supplier is a charge nothing can reason about.
 function addExpense(){
-  const desc = $("#e-desc").value.trim(), sup = $("#e-sup").value.trim();
+  const sup = $("#e-sup").value.trim();
   const amt = num($("#e-amt").value);
-  if (!amt) { alert("An amount is needed."); return; }
-  M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(), description: desc,
+  if (!sup || !amt) { alert("A supplier and an amount are needed."); return; }
+  M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(),
     supplier: sup, amount: amt, work_pct: entryPct("#e-wp"),
-    label: suggestLabel(sup, desc), category: $("#e-cat").value.trim() || suggestCategory(sup, desc),
-    basis: ($("#e-basis").value || "").trim() });
-  ["#e-desc","#e-sup","#e-amt","#e-cat","#e-basis"].forEach(s => $(s).value = "");
+    label: suggestLabel(sup, ""), category: $("#e-cat").value.trim() || suggestCategory(sup, ""),
+    basis: "" });
+  ["#e-sup","#e-amt","#e-cat"].forEach(s => $(s).value = "");
   touch();
 }
 function addIncome(){
@@ -1978,7 +2009,7 @@ function rowKeys(r, kind){
   else if (kind === "income")
     keys.push("h:" + [r.date, r.type, (r.holding||"").trim().toLowerCase(), num(r.gross_aud||r.amount||r.proceeds).toFixed(2)].join("|"));
   else
-    keys.push("h:" + [r.date, (r.supplier||r.description||"").trim().toLowerCase(), num(r.amount).toFixed(2)].join("|"));
+    keys.push("h:" + [r.date, (r.supplier||"").trim().toLowerCase(), num(r.amount).toFixed(2)].join("|"));
   return keys;
 }
 
@@ -2162,8 +2193,8 @@ function exportCSV(which){
       ...M.assets.map(a => [a.asset_id,a.description,a.supplier,a.purchase_date,a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.status,a.disposal_date,derived.keep[a.asset_id]])],
     depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
       ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
-    expenses: [["date","description","supplier","amount","work_pct","claimed","label","basis"],
-      ...M.expenses.map(e => [e.date,e.description,e.supplier,e.amount,e.work_pct,(num(e.amount)*wpFrac(e.work_pct===undefined?100:e.work_pct)).toFixed(2),e.label,e.basis])],
+    expenses: [["date","supplier","amount","work_pct","claimed","label","basis"],
+      ...M.expenses.map(e => [e.date,e.supplier,e.amount,e.work_pct,(num(e.amount)*wpFrac(e.work_pct===undefined?100:e.work_pct)).toFixed(2),e.label,e.basis])],
     income: [["date","type","holding","franked","unfranked","credit","gross_foreign","fx_rate","tax_withheld_aud","acquired","proceeds","cost_base","gross_aud"],
       ...M.income.map(i => [i.date,i.type,i.holding,i.franked,i.unfranked,i.credit,i.gross_foreign,i.fx_rate,i.tax_withheld_aud,i.acquired,i.proceeds,i.cost_base,i.gross_aud])],
     lodgment: (() => {

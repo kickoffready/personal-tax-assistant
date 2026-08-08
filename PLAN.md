@@ -41,7 +41,7 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 |---|---|---|
 | `years[]` | yes | `year`, `marginal_plus_levy`, `estimated`, `assessed`, `variance`, `noa_date`, `cf_capital_loss` |
 | `assets[]` | yes | `asset_id`, `description`, `supplier`, `purchase_date`, `cost_incl`, `treatment`, `effective_life`, `method`, `work_pct{}`, `disposal_date`, `disposal_proceeds` |
-| `expenses[]` | yes | `date`, `description`, `supplier`, `amount`, `work_pct`, `label`, `basis`, `evidence` |
+| `expenses[]` | yes | `date`, `supplier`, `amount`, `work_pct`, `label`, `category`, `basis`, `evidence` |
 | `income[]` | yes | `date`, `type`, `holding`, `gross_foreign`, `currency`, `fx_rate`, `tax_withheld_aud`, `franked`, `unfranked`, `credit` |
 | `depreciation[]` | **no — derived** | one row per asset per year held |
 | `pool{}` | **no — derived** | low-value pool balance by year |
@@ -107,10 +107,36 @@ schedule rather than being repeated across the main register.
    D9  Gifts or donations                 $180.00   [copy]
    ```
 2. **Assets** — claim-first register; record-only metadata and the per-year depreciation trace expand beneath each asset.
-3. **Expenses** — entry with label picker and basis field.
+3. **Expenses** — supplier-led register, grouped by supplier, one control per column.
 4. **Income** — dividends split franked/unfranked/credit, foreign gross + FITO, disposals.
 5. **Year** — reconciliation against the assessment; NOA date drives an amendment-window countdown.
 6. **Data** — load, save, CSV export, autosave status, integrity report.
+
+### Supplier-led expenses
+
+An expense is identified by **who you bought from**. "Acme Cloud Plus" then "Cloud Plus storage
+(200GB)" is the same fact written twice, so schema 4 drops an expense's `description`
+entirely — the supplier leads the table and is required on entry. An **asset** keeps its
+description, because `suggestLife()` reads it to guess an effective life; the two
+collections differ here on purpose.
+
+Supplier is not merely a label: it is the group key, the lodgment breakdown line, half the
+import identity in `rowKeys()`, and the only input left for guessing a label and a
+category. A charge without one is a charge nothing downstream can reason about, so
+`addExpense()` refuses it.
+
+Two consequences were paid for deliberately. The work-from-home checks — the 70c
+double-dip and the non-qualifying water/rates test — used to match typed description text;
+they now read `category + supplier` via `runHay()`, which is a controlled vocabulary
+rather than free text, and two categories (`Energy`, `Water and council rates`) exist so
+those checks have something to read. And **`basis` has no input**: converters write it,
+the → asset move carries it, the CSV exports it, and a new integrity check reports any row
+whose basis starts with `review` — naming the reason, not just the count, because "needs a
+rate" and "receipt not itemised" want different fixes.
+
+Every row of the table is the same width and every cell holds one control, so the entry
+row reads as the first row of the register rather than a form beside it. `ledger.test.js`
+asserts the column counts match across the header, add, group and item rows.
 
 ### Undoing an import
 
