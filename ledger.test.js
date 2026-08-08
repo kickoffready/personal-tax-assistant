@@ -15,8 +15,10 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 
-const code = fs.readFileSync(path.join(__dirname, "ledger.html"), "utf8")
-  .match(/<script>([\s\S]*)<\/script>/)[1];
+const html = fs.readFileSync(path.join(__dirname, "ledger.html"), "utf8");
+const code = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const ACK_STORAGE_KEY = "tax-ledger-acknowledgement";
+const ACK_VERSION = "2026-08-09.1";
 
 const R = { pass: 0, fail: 0 };
 const near = (a, b, tol = 0.01) => Math.abs(a - b) <= tol;
@@ -27,8 +29,10 @@ function assert(name, cond, got, want) {
 
 function stubEl() {
   return { innerHTML:"", textContent:"", value:"", className:"", hidden:false, disabled:false,
+    checked:false, inert:false,
     classList:{ toggle(){}, add(){}, remove(){} }, addEventListener(){}, setAttribute(){},
-    children:[], click(){}, appendChild(){}, removeChild(){}, closest(){ return null; } };
+    children:[], click(){}, focus(){}, appendChild(){}, removeChild(){}, closest(){ return null; },
+    querySelectorAll(){ return []; } };
 }
 
 /**
@@ -36,13 +40,16 @@ function stubEl() {
  * `memoDom` returns the same stub for a given selector every time, so a test can read
  * back what a render function wrote. Off by default — most tests want a blank element.
  */
-function boot(store = {}, refuseStorage = false, memoDom = false) {
+function boot(store = {}, refuseStorage = false, memoDom = false, acknowledged = true) {
+  // Existing engine tests model a returning user. Gate-specific cases opt out below so the
+  // first-use path can be tested without making every arithmetic test acknowledge first.
+  if (acknowledged && !(ACK_STORAGE_KEY in store)) store[ACK_STORAGE_KEY] = ACK_VERSION;
   const els = {};
   const pick = sel => memoDom ? (els[sel] = els[sel] || stubEl()) : stubEl();
   const ctx = {
     console, setTimeout, t: assert, near, DOM: els,
     document: { querySelector: pick, querySelectorAll: () => [], createElement: stubEl,
-      body: { appendChild(){}, removeChild(){} }, addEventListener(){} },
+      body: { appendChild(){}, removeChild(){} }, activeElement:null, addEventListener(){} },
     window: { addEventListener(){} },
     localStorage: {
       getItem: k => (k in store ? store[k] : null),
@@ -949,13 +956,84 @@ t('one year in the model = one row', D.dep.length===1, D.dep.length, 1);
 
 `;
 vm.runInContext(code + "\n;\n" + ENGINE_TESTS, boot());
+const t = assert;  // the browser-session assertions below run at module scope
+
+/* ============================================================
+   First-use acknowledgement — versioned, local and fail-open for the session.
+   ============================================================ */
+console.log('\n— first-use acknowledgement');
+t('the gate is an accessible modal and the ledger starts inert',
+  /id="ackGate" role="dialog" aria-modal="true"/.test(html) &&
+    /id="ledgerApp" inert aria-hidden="true"/.test(html),
+  'markup', 'modal + inert app');
+t('the copy identifies advice limits and non-excludable rights',
+  /not tax,\s+financial or legal advice/.test(html) &&
+    /maximum extent permitted by law/.test(html) && /cannot lawfully be excluded/.test(html),
+  'copy', 'advice limits + lawful carve-out');
+t('the visible acknowledgement version matches the stored version',
+  html.includes('Acknowledgement version ' + ACK_VERSION),
+  ACK_VERSION, ACK_VERSION);
+const ackStore = {};
+const a1 = boot(ackStore, false, true, false);
+vm.runInContext(code, a1);
+t('a new browser is stopped at the acknowledgement',
+  a1.DOM['#ackGate'].hidden === false && a1.DOM['#ledgerApp'].inert === true &&
+    vm.runInContext('appStarted', a1) === false,
+  [a1.DOM['#ackGate'].hidden,a1.DOM['#ledgerApp'].inert,vm.runInContext('appStarted',a1)].join('/'),
+  'false/true/false');
+t('continue is disabled until the checkbox is ticked', a1.DOM['#ackContinue'].disabled === true,
+  a1.DOM['#ackContinue'].disabled, true);
+a1.DOM['#ackCheck'].checked = true;
+vm.runInContext('syncAcknowledgementButton()', a1);
+t('ticking the checkbox enables continue', a1.DOM['#ackContinue'].disabled === false,
+  a1.DOM['#ackContinue'].disabled, false);
+t('acceptance starts the ledger', vm.runInContext('submitAcknowledgement(); appStarted', a1) === true,
+  vm.runInContext('appStarted',a1), true);
+t('acceptance is remembered as the current wording version', ackStore[ACK_STORAGE_KEY] === ACK_VERSION,
+  ackStore[ACK_STORAGE_KEY], ACK_VERSION);
+t('the accepted gate closes and unlocks the page',
+  a1.DOM['#ackGate'].hidden === true && a1.DOM['#ledgerApp'].inert === false,
+  [a1.DOM['#ackGate'].hidden,a1.DOM['#ledgerApp'].inert].join('/'), 'true/false');
+
+const a2 = boot(ackStore, false, true, false);
+vm.runInContext(code, a2);
+t('the current version is not asked again',
+  a2.DOM['#ackGate'].hidden === true && vm.runInContext('appStarted',a2) === true,
+  [a2.DOM['#ackGate'].hidden,vm.runInContext('appStarted',a2)].join('/'), 'true/true');
+
+const staleStore = { [ACK_STORAGE_KEY]:'older-copy' };
+const a3 = boot(staleStore, false, true, false);
+vm.runInContext(code, a3);
+t('new wording asks a previously acknowledged user again',
+  a3.DOM['#ackGate'].hidden === false && vm.runInContext('appStarted',a3) === false,
+  [a3.DOM['#ackGate'].hidden,vm.runInContext('appStarted',a3)].join('/'), 'false/false');
+
+vm.runInContext(`M.assets.push({asset_id:'kept'}); openAcknowledgement(true); submitAcknowledgement();`, a2);
+t('reviewing the acknowledgement does not restart or clear the ledger',
+  vm.runInContext(`appStarted && M.assets.length===1`, a2),
+  vm.runInContext(`[appStarted,M.assets.length].join('/')`,a2), 'true/1');
+
+const refusedAckStore = {};
+const a4 = boot(refusedAckStore, true, true, false);
+vm.runInContext(code, a4);
+a4.DOM['#ackCheck'].checked = true;
+t('storage refusal still allows this session',
+  vm.runInContext('submitAcknowledgement(); appStarted && !acknowledgementStorageOK', a4),
+  vm.runInContext(`[appStarted,acknowledgementStorageOK].join('/')`,a4), 'true/false');
+t('storage refusal is disclosed in the page',
+  /Acknowledgement not remembered/.test(a4.DOM['#recovery'].innerHTML),
+  a4.DOM['#recovery'].innerHTML ? 'shown' : 'missing', 'shown');
+const a5 = boot(refusedAckStore, false, true, false);
+vm.runInContext(code, a5);
+t('an unremembered acknowledgement returns next load',
+  a5.DOM['#ackGate'].hidden === false && vm.runInContext('appStarted',a5) === false,
+  [a5.DOM['#ackGate'].hidden,vm.runInContext('appStarted',a5)].join('/'), 'false/false');
 
 /* ============================================================
    Crash recovery — needs a localStorage that survives reloads.
    ============================================================ */
 const store = {};
 const bootWith = refuse => { const c = boot(store, refuse); vm.runInContext(code, c); return c; };
-const t = assert;  // the crash assertions below run at module scope
 console.log('\\n— session 1: enter data, then "crash" (no save)');
 let s1=bootWith();
 vm.runInContext(`

@@ -39,6 +39,33 @@
   body { background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased; }
   .wrap { max-width:1180px; margin:0 auto; padding:0 18px 80px; }
 
+  /* ---- first-use acknowledgement ---- */
+  .ack-gate { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:20px;
+    background:rgba(0,0,0,.72); background:color-mix(in srgb, var(--ink) 74%, transparent);
+    backdrop-filter:blur(5px); }
+  .ack-gate[hidden] { display:none; }
+  .ack-gate:not([hidden]) + .wrap { height:100vh; overflow:hidden; }
+  .ack-card { width:min(660px, 100%); max-height:calc(100vh - 40px); overflow:auto;
+    border:1px solid var(--rule); border-radius:6px; background:var(--surface); padding:24px;
+    box-shadow:0 24px 80px rgba(0,0,0,.36); }
+  .ack-kicker { font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--warn); margin-bottom:6px; }
+  .ack-card h1 { font-family:var(--serif); font-size:1.65rem; line-height:1.2; font-weight:600; margin-bottom:12px; }
+  .ack-card p, .ack-card li { font-size:14px; }
+  .ack-card ul { margin:12px 0 16px 20px; }
+  .ack-card li + li { margin-top:7px; }
+  .ack-legal { color:var(--muted); }
+  .ack-check { display:flex; gap:10px; align-items:flex-start; padding:13px 14px; margin:18px 0 12px;
+    border:1px solid var(--rule); border-radius:4px; background:var(--surface-2); font-weight:600; cursor:pointer; }
+  .ack-check[hidden] { display:none; }
+  .ack-check input { width:auto; min-width:0; margin-top:4px; accent-color:var(--accent); }
+  .ack-actions { display:flex; justify-content:flex-end; }
+  .ack-version { margin-top:12px; color:var(--faint); font-family:var(--mono); font-size:10px; }
+  @media (max-width:520px) {
+    .ack-gate { padding:0; place-items:stretch; }
+    .ack-card { width:100%; max-height:100vh; border-radius:0; border:none; padding:20px 18px; }
+  }
+
   /* ---- topbar ---- */
   .topbar { position:sticky; top:0; z-index:30; background:var(--paper); border-bottom:1px solid var(--rule); padding:12px 0; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   .brand { font-family:var(--serif); font-size:1.15rem; font-weight:600; }
@@ -165,7 +192,40 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="ack-gate" id="ackGate" role="dialog" aria-modal="true"
+    aria-labelledby="ackTitle" aria-describedby="ackSummary">
+  <div class="ack-card">
+    <p class="ack-kicker">Use at your own risk</p>
+    <h1 id="ackTitle">Before you use Tax Ledger</h1>
+    <p id="ackSummary">This free tool is general information and a calculation aid only. It is not tax,
+      financial or legal advice, and it does not replace advice from a registered tax agent.</p>
+    <ul>
+      <li>Tax rules, rates and return labels change. This tool may be incomplete, incorrect,
+        outdated or unsuitable for your circumstances.</li>
+      <li>You are responsible for checking your inputs, calculations and return against current
+        <a href="https://www.ato.gov.au">ATO guidance</a> or with a registered tax agent before
+        lodging or amending.</li>
+      <li>You are responsible for saving and backing up your ledger file. Browser autosave is
+        crash recovery only; it is not a backup.</li>
+    </ul>
+    <p class="ack-legal">The tool is provided “as is”. To the maximum extent permitted by law,
+      its authors and maintainers exclude warranties and liability for loss arising from its use
+      or from reliance on its output. Nothing in this acknowledgement excludes, restricts or
+      modifies any right or remedy that cannot lawfully be excluded.</p>
+    <form id="ackForm">
+      <label class="ack-check" id="ackCheckRow">
+        <input type="checkbox" id="ackCheck">
+        <span>I understand these limits and accept responsibility for checking information before relying on it.</span>
+      </label>
+      <div class="ack-actions">
+        <button class="primary" id="ackContinue" type="submit" disabled>Continue to Tax Ledger</button>
+      </div>
+    </form>
+    <p class="ack-version">Acknowledgement version 2026-08-09.1</p>
+  </div>
+</div>
+
+<div class="wrap" id="ledgerApp" inert aria-hidden="true">
 
   <div class="topbar">
     <span class="brand">Tax Ledger</span>
@@ -199,7 +259,8 @@
   <section class="view" id="v-data"></section>
 
   <footer>
-    <p>The file you save is the record. Autosave in this browser is crash recovery only — it is not a backup, is not in iCloud, and is lost if you clear site data. Rates current to August 2026. General research only; not personal tax advice.</p>
+    <p>The file you save is the record. Autosave in this browser is crash recovery only — it is not a backup, is not in iCloud, and is lost if you clear site data. Rates current to August 2026. General research only; not personal tax, financial or legal advice. Verify anything you act on against <a href="https://www.ato.gov.au">ato.gov.au</a> or with a registered tax agent.</p>
+    <p style="margin-top:8px"><button class="tiny" id="btnAcknowledgement" type="button">Review acknowledgement</button></p>
   </footer>
 </div>
 
@@ -313,6 +374,10 @@ const POOL_DISPLAY_YEARS = 5;
 const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
 const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
 const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part of the record
+// This browser-only acknowledgement is deliberately separate from the ledger record. Bump the
+// version whenever the wording changes materially so returning users see the new terms once.
+const ACK_STORAGE_KEY = "tax-ledger-acknowledgement";
+const ACK_VERSION = "2026-08-09.1";
 
 // An action label names the DESTINATION, never the number of rows it will affect. Labelling
 // by count produced "→ asset" on a one-charge group and "→ assets" on the next, which reads
@@ -381,6 +446,10 @@ let fileName = null;
 let dirty = false;
 let recoveredAt = null;   // timestamp of a restored draft, null if none
 let autosaveOK = true;    // false when the browser refuses to store
+let acknowledgementStorageOK = true;
+let acknowledgementReview = false;
+let acknowledgementLastFocus = null;
+let appStarted = false;
 
 /* ============================================================
    DATE / FINANCIAL YEAR HELPERS
@@ -1202,6 +1271,12 @@ function render(){
 // not two, and it is the one where you most need both banners on screen at once.
 function renderRecovery(){
   const out = [];
+  if (!acknowledgementStorageOK) {
+    out.push(`<div class="note warn" style="margin-top:16px">
+      <b>Acknowledgement not remembered</b>
+      <p>This browser refused local storage. You can use the ledger in this session, but the
+      acknowledgement will appear again next time. This does not change or affect your ledger file.</p></div>`);
+  }
   if (recoveredAt) {
     out.push(`<div class="note aside" style="margin-top:16px">
       <b>Recovered draft — not yet in a file</b>
@@ -2297,6 +2372,99 @@ function restoreUI(){
   } catch(e){}
 }
 
+/* ============================================================
+   ACKNOWLEDGEMENT — browser-only, never part of the ledger file
+   ============================================================ */
+
+function hasCurrentAcknowledgement(){
+  try {
+    return localStorage.getItem(ACK_STORAGE_KEY) === ACK_VERSION;
+  } catch(e) {
+    acknowledgementStorageOK = false;
+    return false;
+  }
+}
+function rememberAcknowledgement(){
+  try {
+    localStorage.setItem(ACK_STORAGE_KEY, ACK_VERSION);
+    acknowledgementStorageOK = true;
+    return true;
+  } catch(e) {
+    acknowledgementStorageOK = false;
+    return false;
+  }
+}
+function syncAcknowledgementButton(){
+  if (acknowledgementReview) return;
+  $("#ackContinue").disabled = !$("#ackCheck").checked;
+}
+function openAcknowledgement(review){
+  acknowledgementReview = !!review;
+  acknowledgementLastFocus = document.activeElement || null;
+  const app = $("#ledgerApp"), gate = $("#ackGate"), row = $("#ackCheckRow");
+  app.inert = true;
+  app.setAttribute("aria-hidden", "true");
+  gate.hidden = false;
+  gate.setAttribute("aria-hidden", "false");
+  row.hidden = acknowledgementReview;
+  $("#ackCheck").checked = acknowledgementReview;
+  $("#ackContinue").disabled = !acknowledgementReview;
+  $("#ackContinue").textContent = acknowledgementReview ? "Return to Tax Ledger" : "Continue to Tax Ledger";
+  (acknowledgementReview ? $("#ackContinue") : $("#ackCheck")).focus?.();
+}
+function closeAcknowledgement(){
+  const wasReview = acknowledgementReview;
+  acknowledgementReview = false;
+  const app = $("#ledgerApp"), gate = $("#ackGate");
+  gate.hidden = true;
+  gate.setAttribute("aria-hidden", "true");
+  app.inert = false;
+  app.setAttribute("aria-hidden", "false");
+  if (wasReview) acknowledgementLastFocus?.focus?.();
+  acknowledgementLastFocus = null;
+}
+function startLedgerApp(){
+  if (appStarted) return;
+  appStarted = true;
+  loadAuto();
+  render();
+  restoreUI();
+  render();
+}
+function submitAcknowledgement(){
+  if (acknowledgementReview) {
+    closeAcknowledgement();
+    return true;
+  }
+  if (!$("#ackCheck").checked) return false;
+  rememberAcknowledgement();
+  closeAcknowledgement();
+  startLedgerApp();
+  return true;
+}
+function handleAcknowledgementKeydown(e){
+  if (e.key === "Escape" && acknowledgementReview) {
+    e.preventDefault();
+    closeAcknowledgement();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const controls = [...$("#ackGate").querySelectorAll("a[href], input, button")]
+    .filter(el => !el.disabled && !el.closest("[hidden]"));
+  if (!controls.length) return;
+  const first = controls[0], last = controls[controls.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+function initialiseAcknowledgement(){
+  if (hasCurrentAcknowledgement()) {
+    closeAcknowledgement();
+    startLedgerApp();
+  } else {
+    openAcknowledgement(false);
+  }
+}
+
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button[data-v]"); if (!b) return;
   showView(b.dataset.v);
@@ -2311,12 +2479,13 @@ $("#btnImport").addEventListener("click", () => $("#importInput").click());
 $("#btnSave").addEventListener("click", saveFile);
 $("#fileInput").addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
 $("#importInput").addEventListener("change", e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
+$("#btnAcknowledgement").addEventListener("click", () => openAcknowledgement(true));
+$("#ackCheck").addEventListener("change", syncAcknowledgementButton);
+$("#ackForm").addEventListener("submit", e => { e.preventDefault(); submitAcknowledgement(); });
+$("#ackGate").addEventListener("keydown", handleAcknowledgementKeydown);
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 
-loadAuto();
-render();
-restoreUI();
-render();
+initialiseAcknowledgement();
 </script>
 </body>
 </html>
