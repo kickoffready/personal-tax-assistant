@@ -103,6 +103,17 @@
   /* ---- tables ---- */
   .tw { overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--surface); margin-bottom:10px; }
   table { border-collapse:collapse; width:100%; font-size:13.5px; font-variant-numeric:tabular-nums; }
+  table.register col.identity { width:21%; }
+  table.register col.date { width:14%; }
+  table.register col.amount { width:11%; }
+  table.register col.percentage { width:9%; }
+  table.register col.tax { width:19%; }
+  table.register col.deduction { width:10%; }
+  table.register col.actions { width:16%; }
+  .register-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; white-space:nowrap; }
+  .entry-repeat { display:flex; align-items:center; justify-content:flex-end; gap:4px; margin-top:4px;
+    color:var(--muted); font-family:var(--mono); font-size:10px; white-space:nowrap; }
+  .entry-repeat input { width:44px; min-width:44px; padding:2px 4px; }
   th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--rule); vertical-align:middle; }
   thead th { font-size:10px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); font-weight:600; white-space:nowrap; }
   tbody tr:last-child td { border-bottom:none; }
@@ -116,6 +127,8 @@
   tr.add > td { background:var(--surface-2); border-bottom:2px solid var(--rule); }
   tr.add input, tr.add select { border:1px solid var(--rule); background:var(--surface); }
   tr.add td.auto { color:var(--muted); font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+  .entry-derived { margin-top:4px; color:var(--muted); font-family:var(--mono); font-size:10px;
+    letter-spacing:.04em; text-transform:uppercase; }
   td.n, th.n { text-align:right; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
   td.mono { font-family:var(--mono); font-size:12px; }
   tr.sub td { background:var(--surface-2); color:var(--muted); font-size:12.5px; }
@@ -139,6 +152,7 @@
   .note b { display:block; font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:6px; font-weight:600; }
   .note.warn b { color:var(--warn); }
   .note.aside b { color:var(--note); }
+  .entry-status { margin:-4px 0 10px; color:var(--accent); font-size:12.5px; }
 
   .chk { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--rule); font-size:13.5px; align-items:flex-start; }
   .chk:last-child { border-bottom:none; }
@@ -345,6 +359,32 @@ const CATEGORY_HINTS = {
     [/tool|drill|ladder|safety/i, "Tools and safety equipment"]
   ]
 };
+
+// One human choice writes the two fields the return needs. `category` is the readable
+// grouping and `label` is the return section; keeping both in the file preserves schema 4
+// and old ledgers, while the everyday table no longer asks the same tax question twice.
+const EXPENSE_PURPOSES = [
+  { id:"car",          name:"Work-related car",                 category:"Car expenses",                 label:"D1" },
+  { id:"travel",       name:"Work travel",                      category:"Travel expenses",              label:"D2" },
+  { id:"clothing",     name:"Work clothing and laundry",        category:"Clothing and laundry",          label:"D3" },
+  { id:"education",    name:"Work-related education",           category:"Self-education",                label:"D4" },
+  { id:"phone",        name:"Phone, internet and data",         category:"Information services",          label:"D5" },
+  { id:"hosting",      name:"Hosting and domains",              category:"Hosting and domains",           label:"D5" },
+  { id:"software",     name:"Software and subscriptions",       category:"Software and subscriptions",    label:"D5" },
+  { id:"storage",      name:"Storage and backup",               category:"Storage and backup",            label:"D5" },
+  { id:"memberships",  name:"Memberships and union fees",       category:"Professional memberships",      label:"D5" },
+  { id:"repairs",      name:"Repairs and consumables",          category:"Repairs and consumables",       label:"D5" },
+  { id:"energy",       name:"Energy — actual-cost method",      category:"Energy",                        label:"D5" },
+  { id:"water",        name:"Water and council rates — review", category:"Water and council rates",        label:"D5" },
+  { id:"other_work",   name:"Other work expense",               category:"Other work expenses",            label:"D5" },
+  { id:"interest",     name:"Interest and investment expenses", category:"Interest and investment expenses",label:"D7" },
+  { id:"dividends",    name:"Dividend investment expenses",     category:"Dividend expenses",              label:"D8" },
+  { id:"donations",    name:"Gifts and donations",              category:"Donations",                      label:"D9" },
+  { id:"tax_affairs",  name:"Tax agent and tax affairs",        category:"Tax affairs",                    label:"D10" },
+  { id:"super",        name:"Personal super contribution",      category:"Personal super contributions",   label:"D12" },
+  { id:"insurance",    name:"Income protection insurance",      category:"Insurance",                      label:"D15" },
+  { id:"other",        name:"Other deduction",                  category:"Other deductions",               label:"D15" }
+];
 // Categories that describe a thing rather than a service. An expense wearing one of these
 // above the immediate-deduction threshold is usually an asset entered in the wrong place.
 const ASSET_SHAPED = /computers|phones|tablets|peripherals|furniture|equipment|tools|hardware/i;
@@ -379,11 +419,8 @@ const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part
 const ACK_STORAGE_KEY = "tax-ledger-acknowledgement";
 const ACK_VERSION = "2026-08-09.1";
 
-// An action label names the DESTINATION, never the number of rows it will affect. Labelling
-// by count produced "→ asset" on a one-charge group and "→ assets" on the next, which reads
-// as a fault in the table rather than as information — and the count is already there, in
-// the × beside the supplier and in the confirmation. Constants, so a column cannot go ragged
-// one row at a time; `ledger.test.js` asserts each action column holds exactly these.
+// Move labels name the destination, never the number of rows they affect. Import correction
+// is common enough that move and delete live beside Details on every recorded register row.
 const TO_ASSETS = "→ Assets", TO_EXPENSES = "→ Expenses", DELETE_LABEL = "del";
 
 /* ============================================================
@@ -438,6 +475,7 @@ let yearLocked = false;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
 let openGroups = {};    // supplier -> true when an expense group is expanded
+let entryNotice = null; // {view,text}; transient confirmation, never part of the ledger
 // {at, from, summary, added:{expenses,income,assets,years}} of the most recent import.
 // Holds ids rather than row references so it survives the autosave, which is what lets
 // you undo an import after a reload or a crash. Nulled the moment M is replaced.
@@ -474,6 +512,10 @@ function fyEnd(fy){ return d((parseInt(fy.slice(0,4),10)+1) + "-06-30"); }
 function fyNext(fy){ const s = parseInt(fy.slice(0,4),10)+1; return s + "-" + String(s+1).slice(2); }
 function fyPrev(fy){ const s = parseInt(fy.slice(0,4),10)-1; return s + "-" + String(s+1).slice(2); }
 function fyLabel(fy){ return fy.slice(0,4) + "–" + fy.slice(5); }
+function displayDate(dateStr){
+  const x = d(dateStr); if (!x) return dateStr || "—";
+  return x.getDate() + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][x.getMonth()] + " " + x.getFullYear();
+}
 // The year you are reporting on is not the year you are standing in. A return covers a
 // year that has finished, so from 1 July it is the one that just closed: in August 2026
 // you are lodging FY2025-26, not the FY2026-27 you are living through.
@@ -492,6 +534,16 @@ function addYears(dateStr, n){
   const x = d(dateStr); if(!x) return null;
   x.setFullYear(x.getFullYear()+n);
   return iso(x);
+}
+// Monthly repeats keep the original day where that day exists. A charge beginning on
+// 31 January becomes 28/29 February, then returns to 31 March rather than drifting to 28th.
+function addMonths(dateStr, n){
+  const x = d(dateStr); if (!x) return null;
+  const day = x.getDate();
+  const target = new Date(x.getFullYear(), x.getMonth() + n, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(day, lastDay));
+  return iso(target);
 }
 
 /* ============================================================
@@ -562,15 +614,110 @@ function knownCategories(kind){
 // looks like a plain text box until you happen to click it — the options may as well not
 // exist. New categories are still reachable, but through a deliberate "+ new" rather than
 // by typing something slightly different from last time and creating a near-duplicate.
-function categorySelect(kind, current, handler, extra){
+function categorySelect(kind, current, handler, extra, blankLabel){
   const list = knownCategories(kind).slice();
   if (current && list.indexOf(current) === -1) list.push(current);
   list.sort();
   return `<select ${extra||""} onchange="${handler}">
-    <option value=""${!current ? " selected" : ""}>—</option>
+    <option value=""${!current ? " selected" : ""}>${esc(blankLabel || "—")}</option>
     ${list.map(c => `<option value="${esc(c)}"${c===current?" selected":""}>${esc(c)}</option>`).join("")}
     <option value="__new">+ new category…</option>
   </select>`;
+}
+function expensePurpose(id){ return EXPENSE_PURPOSES.find(p => p.id === id); }
+function purposeDisplay(p){ return p ? p.label + " · " + p.name : "review purpose"; }
+// Assets and Expenses deliberately keep different vocabularies, but the everyday register
+// presents both with the same one-selector shape: return section first, then a plain-language
+// purpose. Asset category and treatment remain separate stored facts because the calculations
+// use them independently; this function only combines them for the person reading the row.
+function assetPurposeDisplay(category, treatment){
+  if (!treatment) return "Enter cost · " + (category || "review category");
+  return TREATMENT_CODE[treatment] + " · " + (category || "Review category")
+    + " — " + TREATMENT_NAME[treatment];
+}
+function assetPurposeOptions(category, treatment, allowSuggestion){
+  const list = knownCategories("assets").slice();
+  if (category && list.indexOf(category) === -1) list.push(category);
+  list.sort();
+  const blank = allowSuggestion ? "suggest from item" : assetPurposeDisplay("Review category", treatment);
+  return `<option value=""${!category ? " selected" : ""}>${esc(blank)}</option>
+    ${list.map(c => `<option value="${esc(c)}"${c===category?" selected":""}>${esc(assetPurposeDisplay(c, treatment))}</option>`).join("")}`;
+}
+function assetPurposeSelect(category, treatment, handler, extra, allowSuggestion){
+  return `<select class="claim-purpose" data-register-control="how-claimed" ${extra||""} onchange="${handler}">
+    ${assetPurposeOptions(category, treatment, allowSuggestion)}
+  </select>`;
+}
+function purposeFor(category, label){
+  const exact = EXPENSE_PURPOSES.find(p => p.category === category && p.label === label);
+  if (exact) return exact;
+  if (category) return null; // a custom category must remain visibly custom
+  const fallback = { D1:"car", D2:"travel", D3:"clothing", D4:"education", D5:"other_work",
+    D7:"interest", D8:"dividends", D9:"donations", D10:"tax_affairs", D12:"super", D15:"other" };
+  return expensePurpose(fallback[label || "D5"]);
+}
+function suggestedExpensePurpose(supplier, desc){
+  const category = suggestCategory(supplier, desc, "expenses");
+  const mapped = EXPENSE_PURPOSES.find(p => p.category === category);
+  if (mapped) return mapped;
+  return purposeFor("", suggestLabel(supplier, desc)) || expensePurpose("other_work");
+}
+function purposeSelect(category, label, handler, extra, allowSuggestion){
+  const current = purposeFor(category, label);
+  const custom = category && !current;
+  return `<select class="claim-purpose" data-register-control="how-claimed" ${extra||""} onchange="${handler}">
+    ${allowSuggestion ? `<option value="" selected>suggest from supplier</option>`
+      : !current && !custom ? `<option value="" selected>review purpose</option>` : ""}
+    ${custom ? `<option value="__current" selected>${esc((label || "review") + " · " + category)}</option>` : ""}
+    ${EXPENSE_PURPOSES.map(p => `<option value="${p.id}"${current && current.id===p.id && !allowSuggestion?" selected":""}
+      title="${esc(DEDUCTION_LABELS[p.label])}">${esc(purposeDisplay(p))}</option>`).join("")}
+  </select>`;
+}
+function labelSelect(current, handler){
+  return `<select onchange="${handler}">
+    ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k =>
+      `<option value="${k}"${current===k?" selected":""}>${esc(DEDUCTION_LABELS[k])} (${k})</option>`).join("")}
+  </select>`;
+}
+function chooseExpensePurpose(id, purposeId){
+  const p = expensePurpose(purposeId); if (!p) { render(); return; }
+  const e = M.expenses.find(x => x.id === id); if (!e) return;
+  e.category = p.category; e.label = p.label; touch();
+}
+function chooseGroupPurpose(key, purposeId){
+  const p = expensePurpose(purposeId); if (!p) { render(); return; }
+  M.expenses.forEach(e => {
+    if (fyOf(e.date) !== activeYear || groupKeyOf(e) !== key) return;
+    e.category = p.category; e.label = p.label;
+  });
+  touch();
+}
+function registerColgroup(){
+  return `<colgroup><col class="identity"><col class="date"><col class="amount"><col class="percentage">
+    <col class="tax"><col class="deduction"><col class="actions"></colgroup>`;
+}
+function registerHeader(){
+  return `<thead><tr><th title="Asset item and receipt supplier; expense supplier">Item / supplier</th>
+    <th title="Asset purchase date; expense charge date">Date</th>
+    <th class="n" title="Asset cost; amount of each expense charge">Amount</th>
+    <th class="n">Deductible %</th><th title="Tax purpose and claim method">How claimed</th>
+    <th class="n">FY ${esc(fyLabel(activeYear))} deduction</th><th>Actions</th></tr></thead>`;
+}
+function registerDetailsButton(open, handler, title){
+  return `<button class="tiny" aria-expanded="${open?"true":"false"}" onclick="${handler}" title="${esc(title)}">Details</button>`;
+}
+function registerCorrectionButtons(sendHandler, sendLabel, sendTitle, deleteHandler, deleteTitle){
+  return `<button class="tiny" onclick="${sendHandler}" title="${esc(sendTitle)}">${esc(sendLabel)}</button>
+    <button class="tiny danger" onclick="${deleteHandler}" title="${esc(deleteTitle)}">${DELETE_LABEL}</button>`;
+}
+function registerActions(open, detailsHandler, detailsTitle, sendHandler, sendLabel, sendTitle,
+  deleteHandler, deleteTitle){
+  return `<span class="register-actions">${registerDetailsButton(open, detailsHandler, detailsTitle)}
+    ${registerCorrectionButtons(sendHandler, sendLabel, sendTitle, deleteHandler, deleteTitle)}</span>`;
+}
+function entryStatus(view){
+  return entryNotice && entryNotice.view === view
+    ? `<div class="entry-status" role="status">${esc(entryNotice.text)}</div>` : "";
 }
 function askCategory(){
   const name = (prompt("New category name") || "").trim();
@@ -594,6 +741,11 @@ function treatmentFor(cost){
   return "schedule";
 }
 
+// Decline in value starts when an asset is first used, or installed ready for use, rather
+// than when it was bought. Old files did not record that separate fact, so their purchase
+// date remains the explicit fallback instead of being copied into a new persisted field.
+function assetStartDate(a){ return a.start_date || a.purchase_date; }
+
 /* ============================================================
    DERIVE — everything computed, nothing stored
    ============================================================ */
@@ -602,14 +754,18 @@ function enteredYears(){
   const s = new Set(M.years.map(y => y.year));
   M.expenses.forEach(e => { const f = fyOf(e.date); if(f) s.add(f); });
   M.income.forEach(i => { const f = fyOf(i.date); if(f) s.add(f); });
-  M.assets.forEach(a => { const f = fyOf(a.purchase_date); if(f) s.add(f); });
+  M.assets.forEach(a => {
+    const bought = fyOf(a.purchase_date), started = fyOf(assetStartDate(a));
+    if (bought) s.add(bought);
+    if (started) s.add(started);
+  });
   return [...s].sort();
 }
 function allYears(){
   const s = new Set(enteredYears());
   let firstPoolYear = null;
   M.assets.forEach(a => {
-    let f = fyOf(a.purchase_date);
+    let f = fyOf(assetStartDate(a));
     if (!f || a.treatment !== "pool") return;
     if (!firstPoolYear || f < firstPoolYear) firstPoolYear = f;
     for (let i = 1; i < POOL_DISPLAY_YEARS; i++) {
@@ -646,7 +802,7 @@ function derive(){
     // ---- individually scheduled assets
     for (const a of M.assets) {
       if (a.treatment !== "schedule") continue;
-      const days = daysHeldIn(fy, a.purchase_date, a.disposal_date);
+      const days = daysHeldIn(fy, assetStartDate(a), a.disposal_date);
       if (days <= 0) continue;
       const life = num(a.effective_life) || suggestLife(a.description);
       const cost = num(a.cost);
@@ -676,7 +832,7 @@ function derive(){
     let additions = 0, firstYearDeduction = 0;
     for (const a of M.assets) {
       if (a.treatment !== "pool") continue;
-      if (fyOf(a.purchase_date) !== fy) continue;
+      if (fyOf(assetStartDate(a)) !== fy) continue;
       const taxableCost = num(a.cost) * wpFrac(workPctFor(a, fy));
       additions += taxableCost;
       firstYearDeduction += taxableCost * POOL_FIRST_YEAR;
@@ -702,10 +858,10 @@ function derive(){
     // deduction either. The pool keeps deducting for a decade; the record obligation
     // for the asset that went into it does not follow it that far.
     const rows = dep.filter(r => r.asset_id === a.asset_id && r.deductible > 0.005);
-    const allocFY = fyOf(a.purchase_date);
+    const allocFY = fyOf(assetStartDate(a));
     const lastClaim = rows.length ? iso(fyEnd(rows[rows.length-1].year))
                     : allocFY ? iso(fyEnd(allocFY))
-                    : a.purchase_date;
+                    : assetStartDate(a);
     const candidates = [addYears(lastClaim, 5)];
     if (a.disposal_date) candidates.push(addYears(a.disposal_date, 5));
     const yr = M.years.find(y => y.year === fyOf(a.purchase_date));
@@ -810,7 +966,7 @@ function buildLodgment(fy){
   // immediate write-off assets
   for (const a of M.assets) {
     if (a.treatment !== "immediate") continue;
-    if (fyOf(a.purchase_date) !== fy) continue;
+    if (fyOf(assetStartDate(a)) !== fy) continue;
     add(out.deductions, "D5", categoryOf(a), num(a.cost) * wpFrac(workPctFor(a, fy)),
         (a.description || a.supplier || "asset") + " (immediate, ≤$300)");
   }
@@ -828,7 +984,7 @@ function buildLodgment(fy){
   const p = derived.pool[fy];
   if (p && p.deduction > 0) {
     for (const a of M.assets) {
-      if (a.treatment !== "pool" || fyOf(a.purchase_date) !== fy) continue;
+      if (a.treatment !== "pool" || fyOf(assetStartDate(a)) !== fy) continue;
       const share = num(a.cost) * wpFrac(workPctFor(a, fy)) * POOL_FIRST_YEAR;
       if (share <= 0.005) continue;
       add(out.deductions, "D6", categoryOf(a), share, (a.description || a.supplier || a.asset_id) + " (first year)");
@@ -941,9 +1097,15 @@ function runChecks(){
   }
 
   for (const a of M.assets) {
+    if (a.start_date && a.purchase_date && a.start_date < a.purchase_date)
+      push("high", a.asset_id + " first-use date is before its purchase date",
+        "Correct the dates in Details. Decline in value cannot start before you hold the asset.");
     if (a.treatment === "immediate" && num(a.cost) > IMMEDIATE_THRESHOLD)
       push("high", a.asset_id + " expensed immediately at " + money(num(a.cost)),
         "The $300 test applies to the item's cost, not the work-use share. Anything above it must be depreciated or pooled.");
+    if (a.treatment === "immediate" && workPctFor(a, fyOf(assetStartDate(a))) <= 50)
+      push("high", a.asset_id + " is not used mainly to produce assessable income",
+        "The immediate deduction requires the asset to be used mainly for that purpose. Review the percentage and claim treatment.");
     if (a.treatment === "pool" && num(a.cost) >= POOL_CEILING)
       push("high", a.asset_id + " pooled at " + money(num(a.cost)),
         "Only assets costing under $1,000 are low-cost assets. This one needs an individual schedule.");
@@ -953,12 +1115,12 @@ function runChecks(){
   }
 
   // low-value pool is a one-way door
-  const poolYears = M.assets.filter(a => a.treatment === "pool").map(a => fyOf(a.purchase_date)).filter(Boolean).sort();
+  const poolYears = M.assets.filter(a => a.treatment === "pool").map(a => fyOf(assetStartDate(a))).filter(Boolean).sort();
   if (poolYears.length) {
     const first = poolYears[0];
     const escapees = M.assets.filter(a => a.treatment === "schedule" &&
       num(a.cost) < POOL_CEILING && num(a.cost) > IMMEDIATE_THRESHOLD &&
-      fyOf(a.purchase_date) >= first);
+      fyOf(assetStartDate(a)) >= first);
     if (escapees.length)
       push("high", escapees.length + " low-cost asset" + (escapees.length>1?"s are":" is") + " scheduled individually after a pool was opened",
         "Once you allocate anything to a low-value pool, every later asset under $1,000 must be pooled too. The choice does not reverse: " + escapees.map(a=>a.asset_id).join(", ") + ".");
@@ -1030,10 +1192,25 @@ function runChecks(){
    ============================================================ */
 
 function touch(){ dirty = true; saveAuto(); render(); }
+function validPct(value){
+  const raw = String(value == null ? "" : value).trim();
+  const n = Number(raw);
+  return raw !== "" && Number.isFinite(n) && n >= 0 && n <= 100;
+}
 function setField(coll, id, field, value){
   const row = M[coll].find(r => (r.id || r.asset_id) === id);
   if (!row) return;
-  if (field === "cost") { row.cost = num(value); if (!row.treatment_locked) row.treatment = treatmentFor(row.cost); }
+  if (["work_pct","work_pct_year"].includes(field) && !validPct(value)) {
+    alert("Deductible % must be a number from 0 to 100.");
+    render();
+    return;
+  }
+  if (coll === "assets" && field === "purchase_date") {
+    const startFollowedPurchase = !row.start_date || row.start_date === row.purchase_date;
+    row.purchase_date = value;
+    if (startFollowedPurchase) row.start_date = value;
+  }
+  else if (field === "cost") { row.cost = num(value); if (!row.treatment_locked) row.treatment = treatmentFor(row.cost); }
   else if (field === "work_pct_year") {
     row.work_pct = (typeof row.work_pct === "object" && row.work_pct) ? row.work_pct : {};
     row.work_pct[activeYear] = num(value);
@@ -1115,14 +1292,14 @@ function asAssetRow(e){
   return {
     asset_id: allocateAssetId(fy),
     description: desc, supplier: e.supplier || "",
-    purchase_date: e.date, cost,
+    purchase_date: e.date, start_date: e.date, cost,
     treatment: treatmentFor(cost),
     // Never omitted: workPctFor() reads a missing work_pct as 100%, the one default in
     // the ledger that errs toward over-claiming.
     work_pct: { [fy]: e.work_pct === undefined ? 100 : num(e.work_pct) },
     // Re-derived, never carried: an expense category is not offered by the asset picker.
     category: suggestCategory(e.supplier, desc, "assets"),
-    status: "in_use", basis: e.basis || "",
+    basis: e.basis || "",
     issuer: e.issuer || "", source: e.source || "", source_ref: e.source_ref || ""
   };
 }
@@ -1132,7 +1309,7 @@ function asExpenseRow(a){
     id: uid("e"), date: a.purchase_date,
     supplier: a.supplier || "",
     amount: num(a.cost),
-    work_pct: workPctFor(a, fyOf(a.purchase_date)),
+    work_pct: workPctFor(a, fyOf(assetStartDate(a))),
     label: suggestLabel(a.supplier, desc),
     category: suggestCategory(a.supplier, desc, "expenses"),
     basis: a.basis || "",
@@ -1194,10 +1371,9 @@ function sendGroupToAssets(key){
   touch();
 }
 
-// Deleting a whole group. Same reasoning as the move: the charges behind a header are
-// reachable without expanding it, and a group of one is the common case. The count and the
-// total go in the question, because "delete 12 rows" and "delete 1 row" are not the same
-// decision and the header alone does not say which you are making.
+// The group control is visible on the register row because large imports can create large
+// mistakes. The count and total go in the question, because deleting 12 rows and deleting
+// 1 row are not the same decision and the supplier alone does not say which you are making.
 function removeGroup(key){
   const items = M.expenses.filter(e => fyOf(e.date) === activeYear && groupKeyOf(e) === key);
   if (!items.length) return;
@@ -1225,7 +1401,7 @@ function sendToExpenses(assetId){
       "Clear the disposal first if this was entered by mistake.");
     return;
   }
-  const fy = fyOf(a.purchase_date), cost = num(a.cost), wp = workPctFor(a, fy);
+  const fy = fyOf(assetStartDate(a)), cost = num(a.cost), wp = workPctFor(a, fy);
   const desc = (a.description || a.supplier || "").trim();
 
   const lines = ["Move “" + (desc || a.asset_id) + "” to Expenses?", "",
@@ -1420,70 +1596,54 @@ function renderAssets(){
   const rows = M.assets.slice().sort((a,b) => (a.purchase_date||"").localeCompare(b.purchase_date||""));
   $("#v-assets").innerHTML = `
     <h2>Assets</h2>
-    <p class="sub">One row per item, ever. Treatment is decided by cost, not by how much you use it for work. Rows are never deleted on disposal — set a disposal date instead, so the trail and the retention clock survive.</p>
+    <p class="sub">Add each item once. The cost suggests how it may be claimed, and you can change that suggestion in Details. Record a disposal instead of deleting the asset.</p>
+    ${entryStatus("assets")}
 
-    <div class="tw"><table>
-      <thead><tr>
-        <th>ID</th><th>Description</th><th>Purchased</th><th class="n">Cost</th>
-        <th>Category</th><th>Treatment</th><th class="n">Life</th><th>Method</th><th class="n">Work %</th>
-        <th class="n">Opening</th><th class="n">Decline</th><th class="n">Claim</th><th class="n">Closing</th>
-        <th>Keep until</th><th></th>
-      </tr></thead>
+    <div class="tw"><table class="register">
+      ${registerColgroup()}
+      ${registerHeader()}
       <tbody>
         <tr class="add">
-          <td class="auto" title="Allocated in sequence when the row is added.">auto</td>
-          <td><input id="a-desc" placeholder="14&quot; laptop">
-              <input id="a-sup" placeholder="supplier"></td>
-          <td><input id="a-date" type="date" value="${todayISO()}"></td>
-          <td class="n"><input id="a-cost" class="n" type="number" step="0.01" placeholder="incl. GST"></td>
-          <td><select id="a-cat">
-            <option value="">from description</option>
-            ${knownCategories("assets").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
-          </select></td>
-          <td class="auto" title="Decided by cost: ${money(IMMEDIATE_THRESHOLD)} or under is written off at once, under ${money(POOL_CEILING)} is pooled, the rest is depreciated on a schedule.">by cost</td>
-          <td class="n auto">auto</td>
-          <td class="auto">auto</td>
-          <td class="n"><input id="a-wp" class="n" type="number" step="5" min="0" max="100" value="100"></td>
-          <td class="auto" colspan="5" title="Recomputed from cost and purchase date every time the file is opened — never stored.">derived</td>
+          <td><input id="a-desc" placeholder="14&quot; laptop" oninput="previewAssetEntry()">
+              <input id="a-sup" placeholder="supplier" oninput="previewAssetEntry()"></td>
+          <td><input id="a-date" type="date" value="${todayISO()}" oninput="previewAssetEntry()"></td>
+          <td class="n"><input id="a-cost" class="n" type="number" step="0.01" placeholder="incl. GST" oninput="previewAssetEntry()"></td>
+          <td class="n"><input id="a-wp" class="n" type="number" step="1" min="0" max="100" placeholder="0–100" oninput="previewAssetEntry()"></td>
+          <td>${assetPurposeSelect("", null, "previewAssetEntry()", 'id="a-cat"', true)}
+            <div id="a-purpose-hint" class="entry-derived">Enter an item and cost for a suggestion.</div></td>
+          <td id="a-claim-preview" class="n auto" title="First-year preview from the current entry values.">—</td>
           <td><button class="primary" onclick="addAsset()">Add</button></td>
         </tr>
         ${rows.length ? rows.map(a => {
         const dr = derived.dep.find(r => r.asset_id === a.asset_id && r.year === activeYear);
-        const imm = a.treatment === "immediate" && fyOf(a.purchase_date) === activeYear;
+        const imm = a.treatment === "immediate" && fyOf(assetStartDate(a)) === activeYear;
         const pooled = a.treatment === "pool";
         return `<tr>
-          <td class="mono"><button class="tiny" onclick="toggleAsset('${a.asset_id}')" title="Show supplier, basis and disposal">${openAsset===a.asset_id?"▾":"▸"} ${esc(a.asset_id)}</button></td>
-          <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)"></td>
+          <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)">
+            <div class="mono" style="margin-top:4px;color:var(--muted);font-size:11px">${esc(a.supplier || "supplier not recorded")} · ${esc(a.asset_id)}</div></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
-          <td>${categorySelect("assets", a.category || "", `chooseCategory('assets','${a.asset_id}',this.value)`)}</td>
-          <td>${treatmentCell(a)}</td>
-          <td class="n">${a.treatment==="schedule" ? `<input class="n" type="number" step="1" value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)">` : "—"}</td>
-          <td>${a.treatment==="schedule" ? `<select onchange="setField('assets','${a.asset_id}','method',this.value)">
-            <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>prime cost</option>
-            <option value="diminishing"${a.method==="diminishing"?" selected":""}>diminishing</option></select>` : "—"}</td>
           <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${workPctFor(a,activeYear)}"
-            title="Work use for FY ${fyLabel(activeYear)} — ${esc(workPctSource(a,activeYear))}"
+            title="Deductible % for FY ${fyLabel(activeYear)} — ${esc(workPctSource(a,activeYear))}"
             onchange="setField('assets','${a.asset_id}','work_pct_year',this.value)"></td>
-          <td class="n">${dr ? money(dr.opening) : "—"}</td>
-          <td class="n">${dr ? money(dr.decline) : (pooled ? '<span class="pill pool">pooled</span>' : "—")}</td>
+          <td>${assetPurposeSelect(a.category || "",
+              a.treatment || treatmentFor(a.cost), `chooseCategory('assets','${a.asset_id}',this.value)`,
+              'title="Editable asset claim purpose; treatment is changed in Details."')}</td>
           <td class="n">${dr ? money(dr.deductible)
             : imm ? money(num(a.cost)*wpFrac(workPctFor(a,activeYear)))
             : pooled ? poolClaimCell(a)
             : "—"}</td>
-          <td class="n">${dr ? money(dr.closing) : "—"}</td>
-          <td class="mono">${esc(derived.keep[a.asset_id]||"")}</td>
-          <td style="white-space:nowrap"><button class="tiny" onclick="sendToExpenses('${a.asset_id}')"
-              title="This is a service, not a thing — move it to Expenses, where it claims in full in the year it was paid.">${TO_EXPENSES}</button>
-            <button class="tiny danger" onclick="removeRow('assets','${a.asset_id}')">${DELETE_LABEL}</button></td>
+          <td>${registerActions(openAsset===a.asset_id, `toggleAsset('${a.asset_id}')`,
+            "Claim settings, receipt facts, disposal, retention and calculation trace",
+            `sendToExpenses('${a.asset_id}')`, TO_EXPENSES,
+            "This is a service, not a lasting item — move it to Expenses.",
+            `removeRow('assets','${a.asset_id}')`, "Delete this mistaken asset row.")}</td>
         </tr>${openAsset===a.asset_id ? assetDetail(a) : ""}`; }).join("")
-        : '<tr><td colspan="15" class="empty">No assets yet. Add one at purchase, while you still remember the work purpose.</td></tr>'}
+        : '<tr><td colspan="7" class="empty">No assets yet. Add one at purchase, while you still remember why and how it earns income.</td></tr>'}
       </tbody></table></div>
 
-    <div class="note"><b>Treatment is set by cost</b>
-      $300 or less → immediate deduction (D5) · $301–999 → low-value pool (D6) · $1,000 or more → individual schedule (D5).
-      Once you allocate anything to a pool, every later low-cost asset must be pooled too — the choice does not reverse.
-      A pooled asset automatically fills five income years of pool calculations.</div>
+    <div class="note"><b>Cost suggests how an asset is claimed; it does not settle every condition</b>
+      An asset costing $300 or less can be claimed immediately only if the ATO's other tests are met. An asset under $1,000 may be put in a low-value pool or depreciated individually; this ledger suggests the pool, and Details records a different choice. Once you choose the pool for a low-cost asset, later low-cost assets must join it.</div>
     ${derived.pool[activeYear] && derived.pool[activeYear].deduction > 0 ? `<div class="note aside">
       <b>Pooled assets claim at D6 as one pool total</b>
       The pool is one deduction: <b>${money(derived.pool[activeYear].deduction)}</b> this year, on a closing balance of
@@ -1500,38 +1660,51 @@ function assetDetail(a){
   const balRow = dep.find(r => r.balancing);
   const computed = treatmentFor(a.cost);
   const overridden = a.treatment_locked && a.treatment !== computed;
-  return `<tr class="sub"><td colspan="15" style="padding:14px 16px">
+  return `<tr class="sub"><td colspan="7" style="padding:14px 16px">
     <div class="formrow" style="margin:0 0 10px">
-      <div class="fld" style="min-width:300px"><label>Treatment — ${esc(money(num(a.cost)))} computes to “${esc(computed)}”</label>
+      <div class="fld"><label>Record ID</label><input class="mono" readonly value="${esc(a.asset_id)}"></div>
+      ${f("supplier","Supplier on receipt")}
+      <div class="fld"><label>First used or ready for income-producing use</label>
+        <input type="date" value="${esc(assetStartDate(a))}" onchange="setField('assets','${a.asset_id}','start_date',this.value)"></div>
+    </div>
+    <div class="formrow" style="margin:0 0 10px">
+      <div class="fld"><label>Asset category</label>
+        ${categorySelect("assets", a.category || "", `chooseCategory('assets','${a.asset_id}',this.value)`)}</div>
+      <div class="fld" style="min-width:320px"><label>How this asset is claimed — ${esc(money(num(a.cost)))}</label>
         <div style="display:flex;gap:8px;align-items:center">
           <select onchange="setTreatment('${a.asset_id}',this.value)">
-            ${["immediate","pool","schedule"].map(t => `<option value="${t}"${(a.treatment||computed)===t?" selected":""}>${t}${t===computed?" (computed)":""}</option>`).join("")}
+            <option value="immediate"${(a.treatment||computed)==="immediate"?" selected":""}>D5 · Claim immediately</option>
+            <option value="pool"${(a.treatment||computed)==="pool"?" selected":""}>D6 · Low-value pool</option>
+            <option value="schedule"${(a.treatment||computed)==="schedule"?" selected":""}>D5 · Depreciate individually</option>
           </select>
-          ${overridden ? `<button class="tiny" onclick="resetTreatment('${a.asset_id}')">reset to computed</button>` : ""}
+          ${overridden ? `<button class="tiny" onclick="resetTreatment('${a.asset_id}')">reset to suggestion</button>` : ""}
         </div>
         <span class="sub" style="font-size:12px">${overridden
-          ? "Set by hand — it will no longer follow the cost."
-          : "Only override for a real election: a $301–999 asset may be depreciated instead of pooled. Pooling does not reverse."}</span>
+          ? "Set deliberately — it will no longer follow changes to the cost."
+          : "Suggested from cost. Review the immediate-deduction conditions or optional pool choice before lodging."}</span>
       </div>
+      ${a.treatment==="schedule" ? `<div class="fld"><label>Effective life (years)</label><input class="n" type="number" step="0.1" min="0.1"
+        value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)"></div>
+      <div class="fld"><label>Depreciation method</label><select onchange="setField('assets','${a.asset_id}','method',this.value)">
+        <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>Prime cost</option>
+        <option value="diminishing"${a.method==="diminishing"?" selected":""}>Diminishing value</option></select></div>` : ""}
     </div>
     <div class="formrow" style="margin:0">
-      ${f("supplier","Supplier")}
-      <div class="fld" style="flex:1;min-width:220px"><label>Basis for the work-use %</label>
-        <input value="${esc(a.basis)}" placeholder="why this percentage, decided when"
+      <div class="fld" style="flex:1;min-width:220px"><label>Basis for the Deductible %</label>
+        <input value="${esc(a.basis || "")}" placeholder="why this percentage, decided when"
           onchange="setField('assets','${a.asset_id}','basis',this.value)"></div>
+      <div class="fld"><label>Keep records until</label><input class="mono" readonly value="${esc(derived.keep[a.asset_id]||"")}"></div>
     </div>
     <div class="formrow" style="margin:10px 0 0">
-      <div class="fld"><label>Status</label><select onchange="setField('assets','${a.asset_id}','status',this.value)">
-        ${["in_use","disposed","scrapped"].map(s=>`<option value="${s}"${(a.status||"in_use")===s?" selected":""}>${s.replace("_"," ")}</option>`).join("")}
-      </select></div>
       ${f("disposal_date","Disposal date","date")}
       <div class="fld"><label>Proceeds</label><input class="n" type="number" step="0.01"
         value="${num(a.disposal_proceeds)||""}" onchange="setField('assets','${a.asset_id}','disposal_proceeds',this.value)"></div>
       ${balRow ? `<div class="fld"><label>Balancing adjustment</label>
         <input class="n" readonly value="${money(Math.abs(balRow.balancing))} ${balRow.balancing>0?"assessable":"deductible"}"></div>` : ""}
     </div>
+    <div class="sub" style="font-size:12px;margin:12px 0 0">Keep the supplier receipt with this ID; it should show the item, cost and purchase date.</div>
     ${dep.length ? `<div class="tw" style="margin:12px 0 0"><table>
-      <thead><tr><th>Year</th><th class="n">Opening</th><th class="n">Days</th><th class="n">Decline</th><th class="n">Work %</th><th class="n">Claimed</th><th class="n">Closing</th></tr></thead>
+      <thead><tr><th>Year</th><th class="n">Opening</th><th class="n">Days</th><th class="n">Decline</th><th class="n">Deductible %</th><th class="n">Deduction</th><th class="n">Closing</th></tr></thead>
       <tbody>${dep.map(r=>`<tr><td>${fyLabel(r.year)}</td><td class="n">${money(r.opening)}</td>
         <td class="n">${r.days_held}</td><td class="n">${money(r.decline)}</td><td class="n">${pctNum(r.work_pct)}</td>
         <td class="n">${money(r.deductible)}</td><td class="n">${money(r.closing)}</td></tr>`).join("")}</tbody>
@@ -1540,26 +1713,18 @@ function assetDetail(a){
 }
 function toggleAsset(id){ openAsset = openAsset === id ? null : id; render(); }
 
-// Treatment follows from cost, so it is shown, not chosen. Presenting it as a dropdown
-// invited a decision the thresholds have already made, and a wrong pick here silently
-// changes the deduction. The one real election — pooling a $301–999 asset rather than
-// depreciating it — still exists, but it lives in the detail panel where choosing it is
-// deliberate. Change the cost and an un-overridden treatment follows along.
+// Cost gives the ordinary suggestion; it does not settle the immediate-deduction tests or
+// the choice to use a low-value pool. The suggestion is read-only in the register and the
+// deliberate choice lives in Details. Change the cost and an un-overridden suggestion
+// follows along.
 const TREATMENT_RULE = {
-  immediate: "cost $300 or less → immediate deduction at D5",
-  pool:      "cost $301–999 → low-value pool at D6",
-  schedule:  "cost $1,000 or more → depreciated over its effective life at D5"
+  immediate: "cost $300 or less → may qualify for an immediate deduction at D5",
+  pool:      "cost under $1,000 → may be allocated to the low-value pool at D6",
+  schedule:  "depreciated over its effective life at D5"
 };
-function treatmentCell(a){
-  const computed = treatmentFor(a.cost);
-  const overridden = a.treatment_locked && a.treatment !== computed;
-  const cls = a.treatment === "schedule" ? "sched" : a.treatment === "pool" ? "pool" : "imm";
-  const why = overridden
-    ? `Overridden. ${money(num(a.cost))} computes to "${computed}" (${TREATMENT_RULE[computed]}). Open the row to reset it.`
-    : `Computed from cost: ${TREATMENT_RULE[a.treatment] || "—"}. Change the cost and this follows.`;
-  return `<span class="pill ${cls}" title="${esc(why)}">${esc(a.treatment || computed)}</span>`
-       + (overridden ? ` <span class="pill" title="${esc(why)}">set by hand</span>` : "");
-}
+const TREATMENT_CODE = { immediate:"D5", pool:"D6", schedule:"D5" };
+const TREATMENT_NAME = { immediate:"claim now", pool:"low-value pool", schedule:"depreciate" };
+const TREATMENT_LABEL = { immediate:"D5 · claim now", pool:"D6 · low-value pool", schedule:"D5 · depreciate" };
 function setTreatment(id, value){
   const a = M.assets.find(x => x.asset_id === id); if (!a) return;
   a.treatment = value;
@@ -1577,7 +1742,7 @@ function resetTreatment(id){
 // contribution can still be rolled forward to explain its share of that total. This is a
 // display breakdown only; buildLodgment() keeps the legal claim as one pool balance.
 function poolAssetClaim(a, fy){
-  const allocationYear = fyOf(a.purchase_date);
+  const allocationYear = fyOf(assetStartDate(a));
   const from = allocationYear ? parseInt(allocationYear.slice(0,4), 10) : NaN;
   const to = fy ? parseInt(fy.slice(0,4), 10) : NaN;
   if (a.treatment !== "pool" || !Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
@@ -1602,29 +1767,29 @@ function renderExpenses(){
     .sort((a,b) => (a.date||"").localeCompare(b.date||""));
   $("#v-expenses").innerHTML = `
     <h2>Expenses — FY ${fyLabel(activeYear)}</h2>
-    <p class="sub">The label is the most valuable column here. Set it when you enter the expense, while you still remember why it was deductible — lodgment then becomes a filtered sum. Work use is a property of the <em>service</em>, not the charge: set it on any row and every charge from that supplier this year follows.</p>
+    <p class="sub">Add each service or recurring bill. Similar charges are grouped by supplier, the date decides the financial year, and Tax purpose is an editable suggestion.</p>
+    ${entryStatus("expenses")}
 
-    <div class="tw"><table>
-      <thead><tr><th>Supplier</th><th>Date</th><th class="n">Amount</th>
-        <th class="n">Work %</th><th class="n">Claimed</th><th>Category</th><th>Label</th><th></th></tr></thead>
+    <div class="tw"><table class="register">
+      ${registerColgroup()}
+      ${registerHeader()}
       <tbody>
         ${/* One control per cell, sitting directly above its counterpart in the rows
               below. The entry row is the first row of the table, not a form beside it. */""}
         <tr class="add">
-          <td><input id="e-sup" placeholder="supplier"></td>
-          <td><input id="e-date" type="date" value="${todayISO()}"></td>
-          <td class="n"><input id="e-amt" class="n" type="number" step="0.01" placeholder="0.00"></td>
-          <td class="n"><input id="e-wp" class="n" type="number" step="5" min="0" max="100" value="100"></td>
-          <td class="n auto" title="Amount × work use, once the row is added.">on add</td>
-          <td><select id="e-cat">
-            <option value="">from supplier</option>
-            ${knownCategories("expenses").map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
-          </select></td>
-          <td class="auto" title="Chosen from the supplier. Change it on the row afterwards.">auto</td>
+          <td><input id="e-sup" placeholder="supplier" oninput="previewExpensePurpose()"></td>
+          <td><input id="e-date" type="date" value="${todayISO()}" oninput="previewExpenseEntry()">
+            <label class="entry-repeat" title="Number of monthly charges to add, including the first date">repeat monthly ×
+              <input id="e-repeat" class="n" type="number" step="1" min="1" max="60" value="1" oninput="previewExpenseEntry()"></label></td>
+          <td class="n"><input id="e-amt" class="n" type="number" step="0.01" placeholder="each" oninput="previewExpenseEntry()"></td>
+          <td class="n"><input id="e-wp" class="n" type="number" step="1" min="0" max="100" placeholder="0–100" oninput="previewExpenseEntry()"></td>
+          <td>${purposeSelect("", "", "previewExpensePurpose()", 'id="e-purpose"', true)}
+            <div id="e-purpose-hint" class="sub" style="font-size:11px;margin-top:4px">Enter a supplier for a suggestion.</div></td>
+          <td id="e-claim-preview" class="n auto" title="Charges dated inside the selected FY × Amount × Deductible %.">—</td>
           <td><button class="primary" onclick="addExpense()">Add</button></td>
         </tr>
         ${rows.length ? groupExpenses(rows).map(g => groupHTML(g)).join("")
-        : '<tr><td colspan="8" class="empty">No expenses recorded for this year.</td></tr>'}
+        : '<tr><td colspan="7" class="empty">No expenses recorded for this year.</td></tr>'}
       </tbody></table></div>`;
 }
 
@@ -1647,7 +1812,8 @@ function groupExpenses(rows){
     const pcts = [...new Set(items.map(e => e.work_pct===undefined?100:num(e.work_pct)))];
     const labels = [...new Set(items.map(e => e.label || "D5"))];
     const cats = [...new Set(items.map(e => (e.category||"").trim()).filter(Boolean))];
-    return { key, items, amount, claimed, pcts, labels, cats,
+    const purposePairs = [...new Set(items.map(e => (e.category||"") + "\u0000" + (e.label||"D5")))];
+    return { key, items, amount, claimed, pcts, labels, cats, purposePairs,
              from: items[0].date, to: items[items.length-1].date };
   });
 }
@@ -1656,60 +1822,49 @@ function groupHTML(g){
   const open = !!openGroups[g.key];
   const one = g.items.length === 1;
   const pct = g.pcts.length === 1 ? g.pcts[0] : "";
-  const mixedPct = g.pcts.length > 1, mixedLabel = g.labels.length > 1;
+  const mixedPct = g.pcts.length > 1, mixedPurpose = g.purposePairs.length > 1;
+  const first = g.items[0];
   const head = `<tr class="grp${open?" open":""}">
-    <td><button class="tiny" onclick="toggleGroup('${jsStr(g.key)}')"
-        title="${one ? "1 charge" : g.items.length + " charges, " + g.from + " to " + g.to}">${open?"▾":"▸"} ${esc(g.key)}</button>
+    <td><b>${esc(g.key)}</b>
       ${one ? "" : `<span class="sub" style="font-size:12px"> × ${g.items.length}</span>`}</td>
-    <td class="sub" style="font-size:13px">${esc(one ? g.from : g.from + " – " + g.to)}</td>
+    <td class="sub" style="font-size:13px" title="${esc(one ? g.from : g.from + " to " + g.to)}">${esc(one ? displayDate(g.from) : displayDate(g.from) + " – " + displayDate(g.to))}</td>
     <td class="n"><b>${money(g.amount)}</b></td>
-    <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${pct}"
+    <td class="n"><input class="n" type="number" step="1" min="0" max="100" value="${pct}"
         placeholder="${mixedPct ? "mixed" : ""}"
-        title="Work use % for every ${esc(g.key)} charge this year — set it once here."
+        title="Deductible % for every ${esc(g.key)} charge this year — set it once here."
         onchange="setGroupField('${jsStr(g.key)}','work_pct',this.value)"></td>
+    <td>${mixedPurpose
+      ? `<select title="Charges in this group have different tax purposes."
+          onchange="chooseGroupPurpose('${jsStr(g.key)}',this.value)">
+          <option value="" selected>mixed — review details</option>
+          ${EXPENSE_PURPOSES.map(p=>`<option value="${p.id}">${esc(purposeDisplay(p))}</option>`).join("")}</select>`
+      : purposeSelect(first.category || "", first.label || "D5",
+          `chooseGroupPurpose('${jsStr(g.key)}',this.value)`,
+          `title="Editable suggestion for every ${esc(g.key)} charge in this year."`)}</td>
     <td class="n"><b>${money(g.claimed)}</b></td>
-    <td>${g.cats.length > 1
-      ? `<select title="Charges in this group disagree — pick one to settle it."
-           onchange="chooseGroupCategory('${jsStr(g.key)}',this.value)">
-           <option selected>mixed</option>
-           ${knownCategories("expenses").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}
-           <option value="__new">+ new category…</option></select>`
-      : categorySelect("expenses", g.cats[0] || "",
-          `chooseGroupCategory('${jsStr(g.key)}',this.value)`,
-          `title="Groups this supplier under a heading on the return. Applies to every ${esc(g.key)} charge this year."`)}</td>
-    <td><select onchange="setGroupField('${jsStr(g.key)}','label',this.value)">
-      ${mixedLabel ? '<option selected>mixed</option>' : ""}
-      ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${!mixedLabel && g.labels[0]===k?" selected":""}>${k}</option>`).join("")}
-    </select></td>
-    ${/* Every group can be corrected without expanding, whatever its size. The shape of a
-          group says nothing about what its charges are — twelve $25 rows are a phone plan,
-          two $29 rows are two cables — so the tool suggests and the person decides. Each
-          charge still becomes its own asset row; expand to move just one of them. */""}
-    <td style="white-space:nowrap"><button class="tiny" onclick="sendGroupToAssets('${jsStr(g.key)}')"
-        title="${one
-          ? "This is a thing, not a service — move it to Assets, where the cost decides whether it is written off, pooled or depreciated."
-          : "Move all " + g.items.length + " charges to Assets as " + g.items.length + " separate asset rows. Expand the group to move just one."}"
-        >${TO_ASSETS}</button>
-      <button class="tiny danger" onclick="removeGroup('${jsStr(g.key)}')"
-        title="${one ? "Delete this charge."
-          : "Delete all " + g.items.length + " charges. Expand the group to delete just one."}"
-        >${DELETE_LABEL}</button></td></tr>`;
+    <td>${registerActions(open, `toggleGroup('${jsStr(g.key)}')`,
+      one ? "Edit this charge and its tax details." : "Edit the individual charges and advanced tax fields.",
+      `sendGroupToAssets('${jsStr(g.key)}')`, TO_ASSETS,
+      one ? "This is a lasting item — move it to Assets." : `Move all ${g.items.length} charges in this group to Assets.`,
+      `removeGroup('${jsStr(g.key)}')`,
+      one ? "Delete this mistaken expense row." : `Delete all ${g.items.length} charges in this group.`)}</td></tr>`;
   if (!open) return head;
   return head + g.items.map(e => `<tr class="grp-item">
     <td><input value="${esc(e.supplier)}" placeholder="supplier" onchange="setField('expenses','${e.id}','supplier',this.value)"></td>
     <td><input type="date" value="${esc(e.date)}" onchange="setField('expenses','${e.id}','date',this.value)"></td>
     <td class="n"><input class="n" type="number" step="0.01" value="${num(e.amount)}" onchange="setField('expenses','${e.id}','amount',this.value)"></td>
-    <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${e.work_pct===undefined?100:num(e.work_pct)}"
+    <td class="n"><input class="n" type="number" step="1" min="0" max="100" value="${e.work_pct===undefined?100:num(e.work_pct)}"
       title="Changing this here still applies to every ${esc(e.supplier||g.key)} charge this year."
       onchange="setField('expenses','${e.id}','work_pct',this.value)"></td>
+    <td>${purposeSelect(e.category || "", e.label || "D5", `chooseExpensePurpose('${e.id}',this.value)`)}
+      <details style="margin-top:5px"><summary>Advanced tax fields</summary>
+        <label>Custom category${categorySelect("expenses", e.category || "", `chooseCategory('expenses','${e.id}',this.value)`)}</label>
+        <label>Return section${labelSelect(e.label || "D5", `setField('expenses','${e.id}','label',this.value)`)}</label>
+      </details></td>
     <td class="n">${money(num(e.amount) * wpFrac(e.work_pct===undefined?100:e.work_pct))}</td>
-    <td>${categorySelect("expenses", e.category || "", `chooseCategory('expenses','${e.id}',this.value)`)}</td>
-    <td><select onchange="setField('expenses','${e.id}','label',this.value)">
-      ${Object.keys(DEDUCTION_LABELS).filter(k=>k!=="D6").map(k => `<option value="${k}"${e.label===k?" selected":""}>${k}</option>`).join("")}
-    </select></td>
-    <td style="white-space:nowrap"><button class="tiny" onclick="sendToAssets('${e.id}')"
-        title="This is a thing, not a service — move it to Assets, where the cost decides whether it is written off, pooled or depreciated.">${TO_ASSETS}</button>
-      <button class="tiny danger" onclick="removeRow('expenses','${e.id}')">${DELETE_LABEL}</button></td>
+    <td><span class="register-actions">${registerCorrectionButtons(`sendToAssets('${e.id}')`, TO_ASSETS,
+      "This is a lasting item — move this charge to Assets.", `removeRow('expenses','${e.id}')`,
+      "Delete this mistaken expense row.")}</span></td>
   </tr>`).join("");
 }
 
@@ -1717,6 +1872,11 @@ function toggleGroup(key){ openGroups[key] = !openGroups[key]; render(); }
 
 // Editing at the group header writes through to every charge behind it.
 function setGroupField(key, field, value){
+  if (field === "work_pct" && !validPct(value)) {
+    alert("Deductible % must be a number from 0 to 100.");
+    render();
+    return;
+  }
   const fy = activeYear;
   M.expenses.forEach(e => {
     if (fyOf(e.date) !== fy) return;
@@ -1899,12 +2059,79 @@ function renderData(){
    ACTIONS
    ============================================================ */
 
-// A blank work-use box means "take the default"; a typed 0 means zero. `num(v) || 100`
-// could not tell them apart and turned an explicit 0% into a 100% claim — the same
-// over-claiming default that a missing asset work_pct produces, reached by typing.
+// A percentage is a tax decision, so a new manual row never invents one. Blank is
+// different from an intentional 0%; both tabs use this same reader.
 function entryPct(sel){
   const raw = String($(sel).value == null ? "" : $(sel).value).trim();
-  return raw === "" ? 100 : num(raw);
+  if (raw === "") { alert("Enter a Deductible % from 0 to 100."); return null; }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    alert("Deductible % must be a number from 0 to 100."); return null;
+  }
+  return value;
+}
+function entryRepeat(showAlert){
+  const field = $("#e-repeat");
+  const raw = String(field && field.value != null ? field.value : "").trim();
+  if (raw === "") return 1;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 60) {
+    if (showAlert !== false) alert("Monthly repeat must be a whole number from 1 to 60.");
+    return null;
+  }
+  return value;
+}
+function previewExpenseEntry(){
+  const out = $("#e-claim-preview"); if (!out) return;
+  const amount = Number($("#e-amt").value), rawPct = String($("#e-wp").value || "").trim();
+  const pctValue = Number(rawPct), repeats = entryRepeat(false);
+  if (!(amount > 0) || rawPct === "" || !Number.isFinite(pctValue) || pctValue < 0 || pctValue > 100 || repeats === null) {
+    out.textContent = "—"; return;
+  }
+  const start = $("#e-date").value;
+  if (!start) { out.textContent = "—"; return; }
+  const inView = Array.from({length:repeats}, (_,i) => addMonths(start, i))
+    .filter(date => fyOf(date) === activeYear).length;
+  out.textContent = money(amount * pctValue / 100 * inView);
+}
+function previewExpensePurpose(){
+  const out = $("#e-purpose-hint"), select = $("#e-purpose"), supplier = $("#e-sup");
+  if (!out || !select || !supplier) return;
+  const chosen = expensePurpose(select.value);
+  if (chosen) { out.textContent = "Selected: " + purposeDisplay(chosen); return; }
+  const name = String(supplier.value || "").trim();
+  out.textContent = name ? "Suggested: " + purposeDisplay(suggestedExpensePurpose(name, ""))
+    : "Enter a supplier for a suggestion.";
+}
+function previewAssetEntry(){
+  const claimOut = $("#a-claim-preview"), purposeOut = $("#a-purpose-hint"), categoryField = $("#a-cat");
+  if (!claimOut || !purposeOut || !categoryField) return;
+  const cost = Number($("#a-cost").value), rawPct = String($("#a-wp").value || "").trim();
+  const pctValue = Number(rawPct), treatment = cost > 0 ? treatmentFor(cost) : null;
+  const desc = $("#a-desc").value || "", supplier = $("#a-sup").value || "";
+  const chosenCategory = categoryField.value;
+  const suggestedCategory = chosenCategory || suggestCategory(supplier, desc, "assets");
+  // Cost changes the D5/D6 wording on every category option without changing the person's
+  // category selection. This keeps the one combined control truthful while they type.
+  categoryField.innerHTML = assetPurposeOptions(chosenCategory, treatment, true);
+  categoryField.value = chosenCategory;
+  purposeOut.textContent = treatment && chosenCategory
+    ? "Selected: " + assetPurposeDisplay(chosenCategory, treatment)
+    : treatment && suggestedCategory
+      ? "Suggested: " + assetPurposeDisplay(suggestedCategory, treatment)
+      : !treatment ? "Enter a cost to determine D5 or D6."
+      : "Choose an asset category.";
+  if (!(cost > 0) || rawPct === "" || !Number.isFinite(pctValue) || pctValue < 0 || pctValue > 100) {
+    claimOut.textContent = "—"; return;
+  }
+  const date = $("#a-date").value || todayISO(), fy = fyOf(date);
+  let claim = cost * pctValue / 100;
+  if (treatment === "pool") claim *= POOL_FIRST_YEAR;
+  else if (treatment === "schedule") {
+    const life = suggestLife(desc);
+    claim = cost * (daysHeldIn(fy, date, null) / 365) * (1 / life) * pctValue / 100;
+  }
+  claimOut.textContent = money(claim);
 }
 
 // Entry files into the tab you are standing on. The choice between a thing and a service
@@ -1915,13 +2142,16 @@ function addAsset(){
   const desc = $("#a-desc").value.trim();
   const cost = num($("#a-cost").value);
   if (!desc || !cost) { alert("A description and a cost are needed."); return; }
-  const date = $("#a-date").value || todayISO();
+  const date = $("#a-date").value;
+  if (!date) { alert("A purchase date is needed."); return; }
+  const deductiblePct = entryPct("#a-wp"); if (deductiblePct === null) return;
   M.assets.push({ asset_id: allocateAssetId(fyOf(date)), description: desc, supplier: $("#a-sup").value.trim(),
-    purchase_date: date, cost, treatment: treatmentFor(cost),
+    purchase_date: date, start_date: date, cost, treatment: treatmentFor(cost),
     effective_life: suggestLife(desc), method: "prime_cost",
-    work_pct: { [fyOf(date)]: entryPct("#a-wp") }, status: "in_use",
-    category: $("#a-cat").value.trim() || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" });
-  ["#a-desc","#a-sup","#a-cost"].forEach(s => $(s).value = "");
+    work_pct: { [fyOf(date)]: deductiblePct },
+    category: $("#a-cat").value || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" });
+  entryNotice = { view:"assets", text:"Added “" + desc + "”; first claim is in FY " + fyLabel(fyOf(date)) + "." };
+  ["#a-desc","#a-sup","#a-cost","#a-wp","#a-cat"].forEach(s => $(s).value = "");
   touch();
 }
 // The supplier is required, and not only because it heads the table. It is the group key,
@@ -1931,11 +2161,23 @@ function addExpense(){
   const sup = $("#e-sup").value.trim();
   const amt = num($("#e-amt").value);
   if (!sup || !amt) { alert("A supplier and an amount are needed."); return; }
-  M.expenses.push({ id: uid("e"), date: $("#e-date").value || todayISO(),
-    supplier: sup, amount: amt, work_pct: entryPct("#e-wp"),
-    label: suggestLabel(sup, ""), category: $("#e-cat").value.trim() || suggestCategory(sup, ""),
-    basis: "" });
-  ["#e-sup","#e-amt","#e-cat"].forEach(s => $(s).value = "");
+  const date = $("#e-date").value;
+  if (!date) { alert("A transaction date is needed."); return; }
+  const deductiblePct = entryPct("#e-wp"); if (deductiblePct === null) return;
+  const repeats = entryRepeat(); if (repeats === null) return;
+  const selected = expensePurpose($("#e-purpose").value) || suggestedExpensePurpose(sup, "");
+  const dates = Array.from({length:repeats}, (_,i) => addMonths(date, i));
+  dates.forEach(chargeDate => M.expenses.push({ id: uid("e"), date:chargeDate,
+    supplier: sup, amount: amt, work_pct: deductiblePct,
+    label: selected.label, category: selected.category, basis: "" }));
+  const firstFY = fyOf(dates[0]), lastFY = fyOf(dates[dates.length-1]);
+  const destination = firstFY === lastFY ? "FY " + fyLabel(firstFY)
+    : "FY " + fyLabel(firstFY) + " through FY " + fyLabel(lastFY);
+  entryNotice = { view:"expenses", text: repeats === 1
+    ? "Added " + money(amt) + " from “" + sup + "” to " + destination + "."
+    : "Added " + repeats + " monthly charges of " + money(amt) + " from “" + sup + "” to " + destination + "." };
+  ["#e-sup","#e-amt","#e-wp","#e-purpose"].forEach(s => $(s).value = "");
+  $("#e-repeat").value = "1";
   touch();
 }
 function addIncome(){
@@ -2245,7 +2487,7 @@ function loadFile(file){
       if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
       M = migrate(Object.assign(emptyModel(), parsed));
       ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
-      fileName = file.name; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+      fileName = file.name; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
       saveUI();
       localStorage.removeItem(AUTOSAVE_KEY);
       render();
@@ -2264,8 +2506,8 @@ function csv(rows){
 function exportCSV(which){
   const fy = activeYear;
   const sets = {
-    assets: [["asset_id","description","supplier","purchase_date","cost","treatment","effective_life","method","work_pct","status","disposal_date","keep_until"],
-      ...M.assets.map(a => [a.asset_id,a.description,a.supplier,a.purchase_date,a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.status,a.disposal_date,derived.keep[a.asset_id]])],
+    assets: [["asset_id","description","supplier","purchase_date","start_date","cost","treatment","effective_life","method","income_use_pct","disposal_date","disposal_proceeds","keep_until"],
+      ...M.assets.map(a => [a.asset_id,a.description,a.supplier,a.purchase_date,assetStartDate(a),a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.disposal_date,a.disposal_proceeds,derived.keep[a.asset_id]])],
     depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
       ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
     expenses: [["date","supplier","amount","work_pct","claimed","label","basis"],
@@ -2294,14 +2536,14 @@ function exportCSV(which){
 }
 function resetAll(){
   if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
   saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
 function discardRecovery(){
   if (!confirm("Discard the recovered draft?\n\nAnything entered since your last save is lost. Any ledger file on disk is untouched.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
   saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();

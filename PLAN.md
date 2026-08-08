@@ -1,6 +1,6 @@
 # Static ledger tool for the tax repo
 
-> **Status:** built. `personal/ledger.html` implements this design; 40 engine tests pass.
+> **Status:** built. `personal/ledger.html` implements this design; 461 ledger tests pass.
 > **Written:** 6 August 2026
 
 ## Context
@@ -40,7 +40,7 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 | Collection | Persisted | Notes |
 |---|---|---|
 | `years[]` | yes | `year`, `marginal_plus_levy`, `estimated`, `assessed`, `variance`, `noa_date`, `cf_capital_loss` |
-| `assets[]` | yes | `asset_id`, `description`, `supplier`, `purchase_date`, `cost_incl`, `treatment`, `effective_life`, `method`, `work_pct{}`, `disposal_date`, `disposal_proceeds` |
+| `assets[]` | yes | `asset_id`, `description`, `supplier`, `purchase_date`, `start_date`, `cost_incl`, `treatment`, `effective_life`, `method`, `work_pct{}`, `disposal_date`, `disposal_proceeds` |
 | `expenses[]` | yes | `date`, `supplier`, `amount`, `work_pct`, `label`, `category`, `basis`, `evidence` |
 | `income[]` | yes | `date`, `type`, `holding`, `gross_foreign`, `currency`, `fx_rate`, `tax_withheld_aud`, `franked`, `unfranked`, `credit` |
 | `depreciation[]` | **no — derived** | one row per asset per year held |
@@ -51,8 +51,8 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 
 ### Calculation engine
 
-- **Prime cost**: `cost × (days_held ÷ 365) × (100% ÷ effective_life)`; **diminishing value** as the alternative, fixed at acquisition.
-- **Treatment from cost, not work-use**: ≤$300 immediate (D5) · $301–999 pool-eligible (D6) · ≥$1,000 individual schedule (D5).
+- **Prime cost**: `cost × (days from first use ÷ 365) × (100% ÷ effective_life)`; **diminishing value** as the alternative, fixed when chosen.
+- **Treatment suggested from cost, not deductible percentage**: ≤$300 immediate-deduction candidate (D5) · under $1,000 pool-eligible (D6) · otherwise an individual schedule (D5). The register explains that cost alone does not prove the conditions, and the suggestion remains editable in Details.
 - **Low-value pool**: 18.75% in the year of allocation regardless of date, 37.5% diminishing thereafter. One taxable-use estimate is fixed at allocation. Disposal proceeds at that percentage reduce the closing balance, with any excess reported as income. Enforce the one-way rule — once a pool exists, later low-cost assets must be pooled.
 - **CGT ordering**: current-year losses (preferring non-discountable gains) → carried-forward losses oldest-first → *then* the 50% discount.
 - **Retention**: `keep_until` = latest of lodgment + 5y, last decline claim + 5y, and for CGT assets disposal + 5y.
@@ -62,11 +62,11 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 
 The boundary: **arithmetic and hard rules are computed; judgement stays with the user, but is recorded once and carried forward.** Overstating this is how a tool becomes untrustworthy, so the UI must be explicit about which is which.
 
-| Automatic — rule or arithmetic | Suggested — confirm once | Manual — always the user's |
+| Automatic — rule or arithmetic | Suggested — visible and editable | Manual — always the user's |
 |---|---|---|
-| Treatment from cost (≤$300 / $301–999 / ≥$1,000) | Effective life, from description keywords | Work-use % on devices and mixed-use expenses |
-| Decline in value, prime cost or DV, part-year by days held | Expense label from supplier, then remembered per supplier | The `basis` note explaining the % |
-| Opening/closing balances and roll-forward | | Hours worked from home |
+| Decline in value, prime cost or DV, part-year by days held | Treatment from cost; effective life from description keywords | Whether the $300 conditions are met and whether to use the pool |
+| Opening/closing balances and roll-forward | Expense Tax purpose from supplier, then remembered per supplier | Deductible % (required explicitly for a new manual row) |
+| | | Hours worked from home |
 | Pool: 18.75% then 37.5% | | Whether an expense relates to earning income at all |
 | `claimed = amount × work_pct` | | |
 | `gross_aud = gross_foreign × fx_rate` | | |
@@ -84,10 +84,10 @@ Three consequences worth building for:
 
 ### Claim-first asset entry
 
-The default Assets view contains only inputs that can change the calculation: description,
-purchase date, cost, treatment/calculation settings and claim-use percentage. Supplier,
-category, basis, disposal and retention remain in the expandable asset
-record because they support lodgment or substantiation, but they do not compete with the claim
+The default Assets view contains only the everyday inputs and payoff: item, purchase date,
+cost, Deductible %, how it is claimed and the current-year deduction. Supplier receipt detail,
+the separate/custom category editor, first-use date, basis, calculation settings, disposal and
+retention remain in the expandable asset record because they support lodgment or substantiation, but they do not compete with the claim
 inputs. A field that supports neither is not demoted, it is removed: `serial`, `evidence`,
 `taxable_income` and `payg_withheld` were stored and then read by nothing, and schema 3 drops
 them on load. `status` is not stored for new rows or shown: a disposal date is the single event input.
@@ -107,7 +107,7 @@ schedule rather than being repeated across the main register.
    D9  Gifts or donations                 $180.00   [copy]
    ```
 2. **Assets** — claim-first register; record-only metadata and the per-year depreciation trace expand beneath each asset.
-3. **Expenses** — supplier-led register, grouped by supplier, one control per column.
+3. **Expenses** — supplier-led register, grouped by supplier, with a plain-language Tax purpose.
 4. **Income** — dividends split franked/unfranked/credit, foreign gross + FITO, disposals.
 5. **Year** — reconciliation against the assessment; NOA date drives an amendment-window countdown.
 6. **Data** — load, save, CSV export, autosave status, integrity report.
@@ -137,6 +137,43 @@ rate" and "receipt not itemised" want different fixes.
 Every row of the table is the same width and every cell holds one control, so the entry
 row reads as the first row of the register rather than a form beside it. `ledger.test.js`
 asserts the column counts match across the header, add, group and item rows.
+
+Assets and Expenses share the same seven headings: **Item / supplier, Date, Amount,
+Deductible %, How claimed, FY deduction and Actions**. For an asset, those core fields are
+the item and receipt supplier, purchase date, cost, and one combined asset claim purpose. For
+an expense, they are the supplier, charge date, amount of each charge and one Tax purpose.
+Both How claimed cells use the same single-selector contract and put the return code first:
+`D6 · Peripherals — low-value pool` for an asset follows the same display pattern as
+`D5 · Phone, internet and data` for an expense. Every recorded Assets and Expenses row
+shows Details, send-to and delete directly. Details holds advanced tax, disposal and
+individual-charge editing; it is never a prerequisite for correcting an imported row.
+
+A grouped Expense action applies to the whole visible supplier group. This makes a large
+duplicated or wrongly classified JSON import reversible without opening groups one at a time.
+Move and delete confirmations name the affected count and amount before changing the ledger.
+Expanded individual charges retain their own correction actions for granular cleanup.
+
+The Expenses Date cell also accepts a monthly repeat count. It expands into one ordinary row
+per charge rather than storing a recurrence rule, so every charge keeps a real date and the
+existing grouping, editing, import identity and lodgment calculations stay unchanged. Each
+generated date owns its financial year; repeats crossing 30 June split naturally, while the
+view stays put and the confirmation names the affected year or years.
+
+Tax purpose is a plain-language wrapper over the existing expense `category` and `label`.
+Choosing one writes both values together without changing the schema; custom categories and
+the applicable ATO return-section picker remain available under Advanced tax fields. Supplier hints
+are suggestions only. A manual Deductible % is never suggested or defaulted.
+
+The shared selector presentation does not merge the taxonomies. Asset categories such as
+Computers, Peripherals and Furniture appear only in Assets. Expense purposes such as
+Information services or Donations appear only in Expenses. Assets continue to store category
+and treatment separately because both drive calculations; the register combines them only
+for a consistent human-readable display. The implementation checker renders both tabs and
+fails if their headers, widths, How claimed selector contract or everyday actions diverge.
+
+Return sections remain visible beside the plain language. Asset treatments show D5 or D6,
+and every Expense purpose shows its applicable D-code. The interface may explain a code but
+must not hide it, because it is the direct link between the register and myTax.
 
 ### Undoing an import
 
@@ -220,7 +257,7 @@ the Iowan/system/mono stack) so it reads as part of the same collection.
 3. **Roll-forward** — create the following year and confirm every opening value equals the prior closing, the pool balance carries, and the unused capital loss carries.
 4. **Derivation** — hand-edit a `work_pct` in the JSON, reload, and confirm every dependent figure recomputes rather than persisting stale.
 5. **Integrity** — feed each known-bad pattern (over-$300 immediate, mixed FX, duplicated income rows) and confirm the matching warning fires.
-6. **Automation boundary** — confirm nothing invents a work-use %; that a % set once carries forward across years; that changing it without a `basis` note warns; and that selecting the fixed rate for a year hides the per-category percentage inputs rather than asking for both.
+6. **Automation boundary** — confirm nothing invents a Deductible %; blank and out-of-range manual values are rejected; suggestions stay editable; a % set once carries forward across years; changing it without a `basis` note warns; and selecting the fixed rate for a year hides the per-category percentage inputs rather than asking for both.
 7. **Lodgment totals** — every label total must equal the sum of its expanded supporting rows, and match a hand-check for at least one label.
 8. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
 9. **Reconciliation** — run the spreadsheet's totals for the parallel year through the panel and account for every difference before the tool takes over.

@@ -211,6 +211,12 @@ t('a group agrees on one percentage', G.find(g=>g.key==='Optus').pcts.length===1
 setGroupField('Cloudflare','work_pct',50);
 t('editing the group header writes through', M.expenses.find(e=>e.id==='c1').work_pct===50,
   M.expenses.find(e=>e.id==='c1').work_pct, 50);
+setField('expenses','b1','work_pct',101);
+t('an invalid row edit leaves the recorded percentage alone',
+  M.expenses.find(e=>e.id==='b1').work_pct===70, M.expenses.find(e=>e.id==='b1').work_pct, 70);
+setGroupField('Cloudflare','work_pct','');
+t('an invalid group edit leaves every charge alone',
+  M.expenses.find(e=>e.id==='c1').work_pct===50, M.expenses.find(e=>e.id==='c1').work_pct, 50);
 M.expenses.find(e=>e.id==='b2').work_pct = 40;
 t('a hand-edited charge shows the group as mixed',
   groupExpenses(M.expenses.filter(e=>fyOf(e.date)==='2025-26')).find(g=>g.key==='Optus').pcts.length===2,
@@ -218,13 +224,20 @@ t('a hand-edited charge shows the group as mixed',
 
 console.log('\\n— treatment is computed, and only deliberately overridden');
 setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-T',description:'dock',
-  purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}]});
+  category:'Peripherals',purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}]});
 activeYear='2025-26'; derive();
-t('the row shows a pill, not a dropdown',
-  treatmentCell(M.assets[0]).includes('pill') && !treatmentCell(M.assets[0]).includes('<select'),'pill','pill');
+t('the asset row uses the same one-selector presentation as Expenses',
+  assetPurposeSelect('Peripherals','pool','noop()').includes('class="claim-purpose"') &&
+    !assetPurposeSelect('Peripherals','pool','noop()').includes('pill'),'one selector','one selector');
+t('the pooled treatment visibly names return section D6',
+  assetPurposeSelect('Peripherals','pool','noop()').includes('D6 · Peripherals — low-value pool'),
+  assetPurposeSelect('Peripherals','pool','noop()'), 'D6 · Peripherals — low-value pool');
 setTreatment('A-T','schedule');
 t('an override is recorded as deliberate', M.assets[0].treatment_locked===true, M.assets[0].treatment_locked, true);
-t('the row says it was set by hand', treatmentCell(M.assets[0]).includes('set by hand'),'flagged','flagged');
+t('Details says when the treatment was set by hand', assetDetail(M.assets[0]).includes('Set deliberately'),'flagged','flagged');
+t('an individually depreciated asset visibly names D5',
+  assetPurposeSelect('Peripherals','schedule','noop()').includes('D5 · Peripherals — depreciate'),
+  assetPurposeSelect('Peripherals','schedule','noop()'), 'D5 · Peripherals — depreciate');
 resetTreatment('A-T');
 t('reset returns to the computed value', M.assets[0].treatment==='pool', M.assets[0].treatment,'pool');
 t('reset clears the lock', M.assets[0].treatment_locked===undefined, M.assets[0].treatment_locked,'undefined');
@@ -609,6 +622,10 @@ t('what you called a supplier last time beats the hint',
 t('and it does not leak across kinds',
   suggestCategory('Officeworks','standing desk','expenses')==='',
   suggestCategory('Officeworks','standing desk','expenses'), '(empty)');
+const purposeOptions = purposeSelect('Information services','D5','noop()');
+t('expense purposes also show their return section without offering asset-only D6',
+  purposeOptions.includes('D5 · Phone, internet and data') && purposeOptions.includes('D9 · Gifts and donations') &&
+    !purposeOptions.includes('D6 ·'), purposeOptions, 'visible D-codes, no D6');
 
 console.log('\\n— a thing entered as a service is caught');
 setModel({years:[{year:'2025-26'}], expenses:[
@@ -739,6 +756,27 @@ setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-L',description:'laptop',
 D=derive(); r=D.dep[0];
 t('181/365 of a half-life year', near(r.decline, 2000*(181/365)*0.5, 0.5), r.decline.toFixed(2), (2000*(181/365)*0.5).toFixed(2));
 
+console.log('\\n— depreciation starts when the asset is used, not when it is bought');
+setModel({years:[{year:'2025-26'},{year:'2026-27'}],assets:[{asset_id:'A-START',description:'laptop',
+  purchase_date:'2026-06-15',start_date:'2026-07-01',cost:2000,treatment:'schedule',effective_life:2,
+  method:'prime_cost',work_pct:{'2026-27':100}}]});
+D=derive();
+t('nothing is claimed in the purchase year before first use',
+  !D.dep.some(x=>x.asset_id==='A-START' && x.year==='2025-26'), 'no row', 'no row');
+r=D.dep.find(x=>x.asset_id==='A-START' && x.year==='2026-27');
+t('the first-use year begins the schedule', near(r.decline,1000), r.decline.toFixed(2), '1000.00');
+t('old rows fall back to purchase date explicitly',
+  assetStartDate({purchase_date:'2026-01-01'})==='2026-01-01',
+  assetStartDate({purchase_date:'2026-01-01'}), '2026-01-01');
+setModel({assets:[{asset_id:'A-DATES',purchase_date:'2026-01-01',start_date:'2026-01-01'}]});
+setField('assets','A-DATES','purchase_date','2026-01-02');
+t('correcting a purchase date carries a matching first-use date',
+  M.assets[0].start_date==='2026-01-02', M.assets[0].start_date, '2026-01-02');
+M.assets[0].start_date='2026-02-01';
+setField('assets','A-DATES','purchase_date','2026-01-03');
+t('a deliberately different first-use date is preserved',
+  M.assets[0].start_date==='2026-02-01', M.assets[0].start_date, '2026-02-01');
+
 console.log('\\n— low-value pool: 18.75% then 37.5%');
 setModel({years:[{year:'2025-26'},{year:'2026-27'}],
   assets:[{asset_id:'A-2',description:'dock',purchase_date:'2026-06-30',cost:800,treatment:'pool',work_pct:{'2025-26':100}}]});
@@ -791,6 +829,17 @@ D=derive(); const w=D.warnings.map(x=>x.title).join(' | ');
  [/both sides of 1\\.0/,'mixed FX conventions flagged'],
  [/omits the Medicare levy/,'bare marginal rate flagged']]
  .forEach(([re,name])=>t(name, re.test(w), '', 'flag'));
+
+console.log('\\n— asset treatment is an editable suggestion');
+setModel({years:[{year:'2025-26'}],assets:[
+  {asset_id:'A-I',description:'keyboard',purchase_date:'2025-08-01',cost:200,treatment:'immediate',work_pct:{'2025-26':100}},
+  {asset_id:'A-P',description:'dock',purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}]});
+D=derive(); let choiceWarnings=D.warnings.map(x=>x.title).join('|');
+t('a suggestion does not manufacture an unconfirmed-choice warning',
+  !/immediate-deduction conditions|low-value-pool choice/.test(choiceWarnings), choiceWarnings||'none', 'none');
+t('the suggestion explains that the conditions still need review',
+  assetDetail(M.assets[0]).includes('Review the immediate-deduction conditions'),
+  assetDetail(M.assets[0]), 'review guidance');
 
 // Both work-from-home checks used to read a typed description. They now read the category
 // and the supplier, so they fire on what a row IS rather than on whether you happened to
@@ -932,6 +981,10 @@ console.log('\\n— dates are calendar dates, not UTC instants');
 t('addYears does not drift', addYears('2030-06-30',5)==='2035-06-30', addYears('2030-06-30',5),'2035-06-30');
 t('todayISO matches local date', todayISO()===iso(new Date()), todayISO(), iso(new Date()));
 t('30 June survives a round trip', iso(fyEnd('2025-26'))==='2026-06-30', iso(fyEnd('2025-26')),'2026-06-30');
+t('a monthly repeat clips 31 January to February month-end',
+  addMonths('2026-01-31',1)==='2026-02-28', addMonths('2026-01-31',1), '2026-02-28');
+t('and returns to the original day in March',
+  addMonths('2026-01-31',2)==='2026-03-31', addMonths('2026-01-31',2), '2026-03-31');
 
 console.log('\\n— an asset fully written off stops generating rows');
 setModel({years:[{year:'2025-26'},{year:'2026-27'},{year:'2027-28'},{year:'2028-29'},{year:'2029-30'}],
@@ -1229,7 +1282,7 @@ const addRow = html => (/<tr class="add">[\s\S]*?<\/tr>/.exec(html) || [""])[0];
 const headRow = html => (/<thead>[\s\S]*?<\/thead>/.exec(html) || [""])[0];
 
 for (const [view, render, fields] of [
-  ["#v-expenses", "renderExpenses", ["e-sup", "e-date", "e-amt", "e-wp", "e-cat"]],
+  ["#v-expenses", "renderExpenses", ["e-sup", "e-date", "e-repeat", "e-amt", "e-wp", "e-purpose"]],
   ["#v-assets",   "renderAssets",   ["a-desc", "a-sup", "a-date", "a-cost", "a-wp", "a-cat"]],
   ["#v-income",   "renderIncome",   ["i-date", "i-type", "i-hold", "i-amt"]]
 ]) {
@@ -1249,6 +1302,59 @@ for (const [view, render, fields] of [
       "missing", "present");
 }
 
+vm.runInContext("renderAssets();", ui);
+const assetHead = headRow(ui.DOM["#v-assets"].innerHTML);
+t('the asset register keeps only the everyday columns',
+  ["Item / supplier","Date","Amount","Deductible %","How claimed","deduction","Actions"].every(x=>assetHead.includes(x)) &&
+    !["Opening","Decline","Closing","Keep until","Category","Method"].some(x=>assetHead.includes(x)),
+  assetHead.replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
+  'item / supplier, date, amount, deductible %, how claimed, deduction and actions');
+
+vm.runInContext("renderExpenses();", ui);
+const expenseHead = headRow(ui.DOM["#v-expenses"].innerHTML);
+const sharedCols = vm.runInContext("registerColgroup()", ui);
+t('assets and expenses use the same seven register slots',
+  cols(assetHead) === 7 && cols(expenseHead) === 7 &&
+    ui.DOM["#v-assets"].innerHTML.includes(sharedCols) &&
+    ui.DOM["#v-expenses"].innerHTML.includes(sharedCols) && assetHead === expenseHead,
+  cols(assetHead) + '/' + cols(expenseHead), '7/7 with identical headings and widths');
+
+const assetAdd = addRow(ui.DOM["#v-assets"].innerHTML);
+t('the asset entry exposes its own claim purpose in the shared selector style',
+  assetAdd.includes('id="a-cat"') && assetAdd.includes('class="claim-purpose"') &&
+    assetAdd.includes('Computers</option>'),
+  assetAdd.includes('id="a-cat"') ? 'asset picker present' : 'missing', 'asset category picker');
+t('the asset entry never offers an expense category',
+  !assetAdd.includes('>Information services</option>'),
+  assetAdd.includes('>Information services</option>') ? 'expense category leaked' : 'separate', 'separate taxonomy');
+
+console.log("\n— Assets and Expenses implementation consistency checker");
+const consistentUI = boot({}, false, true);
+vm.runInContext(code, consistentUI);
+vm.runInContext("M = Object.assign(emptyModel(), {years:[{year:'2025-26'}],"
+  + "assets:[{asset_id:'A-C',description:'dock',supplier:'Dell',category:'Peripherals',"
+  + "purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}],"
+  + "expenses:[{id:'E-C',date:'2025-08-01',supplier:'Optus',amount:50,work_pct:70,"
+  + "category:'Information services',label:'D5'}]});"
+  + "activeYear='2025-26'; derive(); renderAssets(); renderExpenses();", consistentUI);
+const consistentAssets = consistentUI.DOM["#v-assets"].innerHTML;
+const consistentExpenses = consistentUI.DOM["#v-expenses"].innerHTML;
+const controlCount = source => (source.match(/data-register-control="how-claimed"/g) || []).length;
+t('each tab has one shared How claimed control for entry and one recorded row',
+  controlCount(consistentAssets) === 2 && controlCount(consistentExpenses) === 2,
+  controlCount(consistentAssets) + '/' + controlCount(consistentExpenses), '2/2');
+t('both tabs use the same claim-purpose selector contract',
+  consistentAssets.includes('<select class="claim-purpose" data-register-control="how-claimed"') &&
+    consistentExpenses.includes('<select class="claim-purpose" data-register-control="how-claimed"'),
+  'shared selectors', 'shared selectors');
+t('the Assets main register no longer stacks category and treatment displays',
+  consistentAssets.includes('D6 · Peripherals — low-value pool') &&
+    !consistentAssets.includes('class="pill pool"'),
+  'single combined purpose', 'single combined purpose');
+t('the shared display contract does not merge the two tax vocabularies',
+  !consistentAssets.includes('Phone, internet and data') && !consistentExpenses.includes('D6 · Peripherals'),
+  'separate vocabularies', 'separate vocabularies');
+
 // The supplier is what the whole view is built on — the group key, the lodgment
 // breakdown line, half the import identity, and the only input left for guessing a label
 // and a category. A charge without one is a charge nothing downstream can reason about,
@@ -1257,6 +1363,7 @@ const ex = boot({}, false, true);
 vm.runInContext(code, ex);
 vm.runInContext(`
   DOM_SET = (s, v) => { document.querySelector(s).value = v; };
+  DOM_SET('#e-date', '2025-08-01'); DOM_SET('#e-wp', '100'); DOM_SET('#e-purpose', '');
   DOM_SET('#e-amt', '42'); DOM_SET('#e-sup', '');
   addExpense();
 `, ex);
@@ -1454,7 +1561,7 @@ t('and never collide with an id already held',
    rows a converter classified, and is corrected on the recorded row, not offered again
    where nothing is in doubt.
    ============================================================ */
-console.log("\n— the correction is reachable from the collapsed table");
+console.log("\n— import corrections stay on recorded table rows");
 
 const entry = (fields) => {
   const c = boot({}, false, true);
@@ -1464,15 +1571,12 @@ const entry = (fields) => {
   return c;
 };
 
-const EXP_FIELDS = { "#e-date":"2025-08-01", "#e-desc":"WD19S dock", "#e-sup":"Dell",
-  "#e-amt":"310.32", "#e-wp":"100", "#e-cat":"Software and subscriptions", "#e-basis":"work laptop" };
+const EXP_FIELDS = { "#e-date":"2025-08-01", "#e-sup":"Dell", "#e-amt":"310.32",
+  "#e-wp":"100", "#e-purpose":"software" };
 
 // ---- every group is correctable, whatever its size ----
-// The button was first put on the expanded detail row only, so a collapsed group showed an
-// empty action cell and the Expenses tab looked like it had no buttons at all. Then it was
-// offered for one-charge groups only — but the size of a group says nothing about what its
-// charges are. Twelve $25 rows are a phone plan; two $29 rows are two cables. The tool
-// cannot tell, so it offers the move and the person decides.
+// JSON imports can create many duplicated or misclassified rows. Details must not be a
+// prerequisite for correcting them, so the group header carries all three actions.
 const grp = boot({}, false, true);
 vm.runInContext(code, grp);
 vm.runInContext(`
@@ -1484,28 +1588,30 @@ vm.runInContext(`
     amount:29,work_pct:100,label:"D5"});
   activeYear="2025-26"; openGroups={}; derive(); renderExpenses();
 `, grp);
-const gh = grp.DOM["#v-expenses"].innerHTML;
 const groupRow = key => {
-  const rows = gh.match(/<tr class="grp(?: open)?">[\s\S]*?<\/tr>/g) || [];
-  return rows.find(r => r.indexOf(">▸ " + key) !== -1) || "";
+  const rows = grp.DOM["#v-expenses"].innerHTML.match(/<tr class="grp(?: open)?">[\s\S]*?<\/tr>/g) || [];
+  return rows.find(r => r.indexOf("<b>" + key + "</b>") !== -1) || "";
 };
-t('a collapsed one-charge group offers the move',
-  groupRow("Dell").indexOf("sendGroupToAssets('Dell')") !== -1,
-  groupRow("Dell").indexOf("→ asset") !== -1 ? "button present" : "no button", 'a → asset button');
-t('a two-charge group offers it too',
-  groupRow("Amazon").indexOf("sendGroupToAssets('Amazon')") !== -1,
-  groupRow("Amazon").indexOf("→ asset") !== -1 ? "button present" : "no button", 'a → assets button');
-// The label names the destination, not the count. Pluralising it by group size put
-// "→ asset" on one row and "→ assets" on the next, which reads as a fault in the table.
-t('every row asks for the same thing in the same words',
-  groupRow("Dell").indexOf(">→ Assets<") !== -1 && groupRow("Amazon").indexOf(">→ Assets<") !== -1,
-  [groupRow("Dell"), groupRow("Amazon")].map(r => (/>(→ [^<]*)</.exec(r) || ["","?"])[1]).join(" / "),
-  '→ Assets / → Assets');
-t('neither needs expanding first', Object.keys(vm.runInContext("openGroups", grp)).length === 0,
+t('collapsed groups use the same Details action',
+  groupRow("Dell").indexOf(">Details<") !== -1 && groupRow("Amazon").indexOf(">Details<") !== -1,
+  [groupRow("Dell"), groupRow("Amazon")].map(r => r.includes(">Details<") ? "Details" : "missing").join(" / "),
+  'Details / Details');
+t('move and delete are directly available on collapsed group rows',
+  groupRow("Dell").includes("sendGroupToAssets") && groupRow("Dell").includes("removeGroup") &&
+    groupRow("Amazon").includes("sendGroupToAssets") && groupRow("Amazon").includes("removeGroup"),
+  'collapsed actions', 'Details, send and delete');
+t('groups begin collapsed', Object.keys(vm.runInContext("openGroups", grp)).length === 0,
   JSON.stringify(vm.runInContext("openGroups", grp)), '{} — nothing expanded');
 t('the group rows still fill every column',
-  (groupRow("Dell").match(/<td/g) || []).length === 8,
-  (groupRow("Dell").match(/<td/g) || []).length, 8);
+  (groupRow("Dell").match(/<td/g) || []).length === 7,
+  (groupRow("Dell").match(/<td/g) || []).length, 7);
+
+vm.runInContext(`toggleGroup("Amazon");`, grp);
+const openedAmazon = grp.DOM["#v-expenses"].innerHTML;
+t('opening Details does not move or duplicate group corrections',
+  (openedAmazon.match(/sendGroupToAssets\('Amazon'\)/g) || []).length === 1 &&
+    (openedAmazon.match(/removeGroup\('Amazon'\)/g) || []).length === 1,
+  'one action set', 'one action set');
 
 // Two cables are two assets, not one $58 asset — the $300 test applies per item.
 vm.runInContext(`sendGroupToAssets("Amazon");`, grp);
@@ -1525,7 +1631,7 @@ t('the charges leave expenses', vm.runInContext("M.expenses.length", grp) === 1,
 t('the confirmation says how many rows it makes',
   /2 asset rows/.test(grp.CONFIRMED.join(" ")), grp.CONFIRMED.join(" ").slice(0,90), 'names 2 asset rows');
 
-// ---- deleting from the header, same reach as the move ----
+// ---- deleting directly from the group row ----
 const del = boot({}, false, true);
 vm.runInContext(code, del);
 const DEL_ROWS = `
@@ -1534,16 +1640,18 @@ const DEL_ROWS = `
   ["2025-08-01","2025-09-01","2025-10-01"].forEach(function(d,i){
     M.expenses.push({id:"b"+i,date:d,description:"mobile",supplier:"Optus",
       amount:25,work_pct:70,label:"D5"}); });
-  activeYear="2025-26"; openGroups={}; derive(); renderExpenses();`;
+  activeYear="2025-26"; openGroups={"Optus":true}; derive(); renderExpenses();`;
 vm.runInContext(DEL_ROWS, del);
 const delRow = key => (del.DOM["#v-expenses"].innerHTML.match(/<tr class="grp(?: open)?">[\s\S]*?<\/tr>/g) || [])
-  .find(r => r.indexOf(">▸ " + key) !== -1) || "";
-t('the group header offers del beside the move',
-  delRow("Optus").indexOf("removeGroup('Optus')") !== -1,
-  delRow("Optus").indexOf(">del<") !== -1 ? "del present" : "no del", 'a del button');
-t('and the two sit in one cell',
-  (delRow("Optus").match(/<td/g) || []).length === 8,
-  (delRow("Optus").match(/<td/g) || []).length, 8);
+  .find(r => r.indexOf("<b>" + key + "</b>") !== -1) || "";
+t('an open group keeps Details, send and delete on its header',
+  delRow("Optus").includes(">Details<") && delRow("Optus").includes("sendGroupToAssets") &&
+    delRow("Optus").includes("removeGroup"),
+  'header actions', 'Details, send and delete');
+t('group corrections are not repeated in a separate Details row',
+  (del.DOM["#v-expenses"].innerHTML.match(/sendGroupToAssets\('Optus'\)/g) || []).length === 1 &&
+    !del.DOM["#v-expenses"].innerHTML.includes(">Delete group<"),
+  'one header action set', 'one header action set');
 
 vm.runInContext(`removeGroup("Optus");`, del);
 t('deleting a group removes every charge in it',
@@ -1580,8 +1688,8 @@ const ah = apos.DOM["#v-expenses"].innerHTML;
 // The browser decodes the attribute, so \&#39; becomes \' — an escaped quote inside the
 // single-quoted argument, rather than one that closes it.
 t('an apostrophe in a supplier is escaped for JavaScript',
-  ah.indexOf("sendGroupToAssets('Dan\\&#39;s Cafe')") !== -1,
-  (/sendGroupToAssets\([^)]*\)/.exec(ah) || ["missing"])[0], "sendGroupToAssets('Dan\\&#39;s Cafe')");
+  ah.indexOf("toggleGroup('Dan\\&#39;s Cafe')") !== -1,
+  (/toggleGroup\([^)]*\)/.exec(ah) || ["missing"])[0], "toggleGroup('Dan\\&#39;s Cafe')");
 t('and the group still moves', (() => {
     vm.runInContext(`sendGroupToAssets("Dan's Cafe");`, apos);
     return vm.runInContext("M.assets.length", apos) === 1;
@@ -1610,9 +1718,15 @@ vm.runInContext(`
   M.assets.push({asset_id:"A-2026-002",description:"chair",supplier:"Officeworks",purchase_date:"2025-09-01",
     cost:400,treatment:"pool",work_pct:{"2025-26":100}});
   M.income.push({id:"i1",date:"2025-08-01",type:"dividend",holding:"BANKA",franked:100});
-  activeYear="2025-26"; openGroups={"Amazon":true}; derive();
+  activeYear="2025-26"; openGroups={}; derive();
   renderExpenses(); renderAssets(); renderIncome();
 `, cons);
+
+t('entry rows keep Add as their only action',
+  [cons.DOM["#v-expenses"].innerHTML, cons.DOM["#v-assets"].innerHTML].every(source => {
+    const row = addRow(source);
+    return row.includes(">Add<") && !row.includes("sendTo") && !row.includes("removeRow");
+  }), 'Add only', 'Add only');
 
 // Buttons in the LAST cell of each body row — the action column.
 function actionLabels(viewHTML){
@@ -1628,8 +1742,8 @@ function actionLabels(viewHTML){
 const distinct = a => [...new Set(a)].sort();
 
 for (const [view, expected] of [
-  ["#v-expenses", ["del", "→ Assets"]],
-  ["#v-assets",   ["del", "→ Expenses"]],
+  ["#v-expenses", ["Details", "del", "→ Assets"]],
+  ["#v-assets",   ["Details", "del", "→ Expenses"]],
   ["#v-income",   ["del"]]
 ]) {
   const got = distinct(actionLabels(cons.DOM[view].innerHTML));
@@ -1637,16 +1751,36 @@ for (const [view, expected] of [
     got.join("|") === expected.join("|"), got.join(", ") || "(none)", expected.join(", "));
 }
 
-// Every kind of row in Expenses — a group of one, a group of many, and an expanded charge —
-// must all offer the move, or the column has a hole in it like the one that started this.
-const exRows = (cons.DOM["#v-expenses"].innerHTML.match(/<tr class="grp[^"]*">[\s\S]*?<\/tr>/g) || [])
-  .concat(cons.DOM["#v-expenses"].innerHTML.match(/<tr class="grp-item">[\s\S]*?<\/tr>/g) || []);
-t('no expense row is left without the move',
-  exRows.length > 0 && exRows.every(r => r.indexOf(">→ Assets<") !== -1),
-  exRows.filter(r => r.indexOf(">→ Assets<") === -1).length + " of " + exRows.length + " missing it", '0 missing');
-t('and none without del',
-  exRows.every(r => r.indexOf(">del<") !== -1),
-  exRows.filter(r => r.indexOf(">del<") === -1).length + " of " + exRows.length + " missing it", '0 missing');
+// Import correction is visible without expanding the asset. Details must not duplicate it.
+const closedAssetHTML = cons.DOM["#v-assets"].innerHTML;
+t('asset correction actions are directly available on recorded rows',
+  closedAssetHTML.includes("sendToExpenses('A-2026-001')") &&
+    closedAssetHTML.includes("removeRow('assets','A-2026-001')"),
+  'visible actions', 'send and delete');
+vm.runInContext(`openAsset="A-2026-001"; renderAssets();`, cons);
+const openAssetActions = distinct(actionLabels(cons.DOM["#v-assets"].innerHTML));
+t('opening asset Details does not change the table action vocabulary',
+  openAssetActions.join("|") === ["Details", "del", "→ Expenses"].join("|"),
+  openAssetActions.join(", "), 'Details, del, → Expenses');
+
+// Expense group headers follow the same direct-action contract. Expanded charge rows retain
+// granular actions so one duplicate can be corrected without deleting its whole group.
+vm.runInContext(`toggleGroup("Amazon");`, cons);
+const expandedExpenses = cons.DOM["#v-expenses"].innerHTML;
+const expenseHeads = (expandedExpenses.match(/<tr class="grp[^"]*">[\s\S]*?<\/tr>/g) || [])
+  .filter(r => !r.includes('class="grp-item"'));
+const expenseItems = expandedExpenses.match(/<tr class="grp-item">[\s\S]*?<\/tr>/g) || [];
+t('every expense group row exposes Details, send and delete',
+  expenseHeads.length === 3 && expenseHeads.every(r =>
+    r.includes(">Details<") && r.includes(">→ Assets<") && r.includes(">del<")),
+  expenseHeads.length + ' rows', '3 rows with all actions');
+t('expanded charges expose move and mistaken-row deletion',
+  expenseItems.length === 2 && expenseItems.every(r => r.includes(">→ Assets<") && r.includes(">del<")),
+  expenseItems.length + ' detail rows', '2 rows with both corrections');
+t('an expanded group has no duplicate correction-action row',
+  (expandedExpenses.match(/sendGroupToAssets\('Amazon'\)/g) || []).length === 1 &&
+    !expandedExpenses.includes('>Delete group<'),
+  'one header action set', 'one header action set');
 
 console.log("\n— what the entry row does with a work-use percentage");
 
@@ -1658,13 +1792,106 @@ t('a typed 0% work use claims nothing', vm.runInContext("M.expenses[0].work_pct"
   vm.runInContext("M.expenses[0].work_pct", z), 0);
 const zb = entry(Object.assign({}, EXP_FIELDS, { "#e-wp":"" }));
 vm.runInContext(`addExpense();`, zb);
-t('and a blank one still defaults to 100', vm.runInContext("M.expenses[0].work_pct", zb) === 100,
-  vm.runInContext("M.expenses[0].work_pct", zb), 100);
+t('a blank percentage is rejected instead of invented', vm.runInContext("M.expenses.length", zb) === 0,
+  vm.runInContext("M.expenses.length", zb), 0);
+t('the rejection explains the valid range', zb.ALERTS.some(x => x.includes("0 to 100")),
+  zb.ALERTS.join(' | '), '0 to 100 guidance');
+const zo = entry(Object.assign({}, EXP_FIELDS, { "#e-wp":"101" }));
+vm.runInContext(`addExpense();`, zo);
+t('an out-of-range percentage is rejected too', vm.runInContext("M.expenses.length", zo) === 0,
+  vm.runInContext("M.expenses.length", zo), 0);
 const za = entry({ "#a-desc":"dock", "#a-sup":"Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"0", "#a-cat":"" });
 vm.runInContext(`addAsset();`, za);
 t('the same holds on the asset entry row',
   vm.runInContext('workPctFor(M.assets[0],"2025-26")', za) === 0,
   vm.runInContext('workPctFor(M.assets[0],"2025-26")', za), 0);
+const zab = entry({ "#a-desc":"dock", "#a-sup":"Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"" });
+vm.runInContext(`addAsset();`, zab);
+t('a blank asset percentage is rejected too', vm.runInContext("M.assets.length", zab) === 0,
+  vm.runInContext("M.assets.length", zab), 0);
+const categorizedAsset = entry({ "#a-desc":"laptop", "#a-sup":"Dell", "#a-date":"2025-08-01",
+  "#a-cost":"1800", "#a-wp":"80", "#a-cat":"Furniture" });
+vm.runInContext(`previewAssetEntry();`, categorizedAsset);
+t('the asset entry identifies a deliberately selected category',
+  categorizedAsset.DOM["#a-purpose-hint"].textContent === 'Selected: D5 · Furniture — depreciate',
+  categorizedAsset.DOM["#a-purpose-hint"].textContent, 'Selected: D5 · Furniture — depreciate');
+vm.runInContext(`addAsset();`, categorizedAsset);
+t('the selected asset category is stored on the asset',
+  vm.runInContext("M.assets[0].category", categorizedAsset) === 'Furniture',
+  vm.runInContext("M.assets[0].category", categorizedAsset), 'Furniture');
+
+console.log("\n— suggestions inform, dates route, and the current view stays put");
+const suggested = entry({ "#e-date":"2025-08-01", "#e-sup":"Optus", "#e-amt":"50",
+  "#e-wp":"70", "#e-purpose":"" });
+vm.runInContext(`addExpense();`, suggested);
+t('a blank Tax purpose uses the supplier suggestion',
+  vm.runInContext("M.expenses[0].category + '|' + M.expenses[0].label", suggested) === 'Information services|D5',
+  vm.runInContext("M.expenses[0].category + '|' + M.expenses[0].label", suggested), 'Information services|D5');
+const chosen = entry(Object.assign({}, EXP_FIELDS, { "#e-purpose":"donations" }));
+vm.runInContext(`addExpense();`, chosen);
+t('an explicit Tax purpose writes category and return section together',
+  vm.runInContext("M.expenses[0].category + '|' + M.expenses[0].label", chosen) === 'Donations|D9',
+  vm.runInContext("M.expenses[0].category + '|' + M.expenses[0].label", chosen), 'Donations|D9');
+
+const monthly = entry({ "#e-date":"2025-07-20", "#e-repeat":"12", "#e-sup":"Optus",
+  "#e-amt":"25", "#e-wp":"70", "#e-purpose":"phone" });
+vm.runInContext(`previewExpenseEntry();`, monthly);
+t('the entry preview includes every repeated charge in the viewed FY',
+  monthly.DOM["#e-claim-preview"].textContent === '$210.00',
+  monthly.DOM["#e-claim-preview"].textContent, '$210.00');
+vm.runInContext(`addExpense();`, monthly);
+t('monthly repeat creates one underlying row per charge',
+  vm.runInContext("M.expenses.length", monthly) === 12, vm.runInContext("M.expenses.length", monthly), 12);
+t('the repeated dates run from July through June',
+  vm.runInContext("M.expenses[0].date + '|' + M.expenses[11].date", monthly) === '2025-07-20|2026-06-20',
+  vm.runInContext("M.expenses[0].date + '|' + M.expenses[11].date", monthly), '2025-07-20|2026-06-20');
+t('those rows produce the same FY deduction shown in the preview',
+  near(vm.runInContext("derived.lodgment['2025-26'].deductions.D5.total", monthly), 210),
+  vm.runInContext("derived.lodgment['2025-26'].deductions.D5.total", monthly), 210);
+t('the confirmation names the number of monthly charges',
+  vm.runInContext("entryNotice.text", monthly).includes('12 monthly charges'),
+  vm.runInContext("entryNotice.text", monthly), '12 monthly charges');
+
+const badRepeat = entry(Object.assign({}, EXP_FIELDS, { "#e-repeat":"1.5" }));
+vm.runInContext(`addExpense();`, badRepeat);
+t('a fractional repeat count is rejected', vm.runInContext("M.expenses.length", badRepeat) === 0,
+  vm.runInContext("M.expenses.length", badRepeat), 0);
+
+const acrossYears = entry({ "#e-date":"2026-05-31", "#e-repeat":"4", "#e-sup":"Optus",
+  "#e-amt":"25", "#e-wp":"70", "#e-purpose":"phone" });
+vm.runInContext(`M.years.push({year:"2025-26"}); addExpense();`, acrossYears);
+t('repeats crossing 30 June are routed by each generated date',
+  vm.runInContext("M.expenses.map(e=>e.date).join('|')", acrossYears) ===
+    '2026-05-31|2026-06-30|2026-07-31|2026-08-31',
+  vm.runInContext("M.expenses.map(e=>e.date).join('|')", acrossYears),
+  '2026-05-31|2026-06-30|2026-07-31|2026-08-31');
+t('the repeat confirmation names both financial years',
+  vm.runInContext("entryNotice.text", acrossYears).includes('FY 2025–26 through FY 2026–27'),
+  vm.runInContext("entryNotice.text", acrossYears), 'both FYs');
+
+const routed = entry({ "#e-date":"2026-08-09", "#e-sup":"Cloudflare", "#e-amt":"30",
+  "#e-wp":"100", "#e-purpose":"hosting" });
+vm.runInContext(`M.years.push({year:"2025-26"}); addExpense();`, routed);
+t('the transaction date owns the financial year',
+  vm.runInContext("fyOf(M.expenses[0].date)", routed) === '2026-27',
+  vm.runInContext("fyOf(M.expenses[0].date)", routed), '2026-27');
+t('adding into another year does not move the current view',
+  vm.runInContext("activeYear", routed) === '2025-26', vm.runInContext("activeYear", routed), '2025-26');
+t('the confirmation names where the row went',
+  vm.runInContext("entryNotice.text", routed).includes('FY 2026–27'),
+  vm.runInContext("entryNotice.text", routed), 'mentions FY 2026–27');
+
+const routedAsset = entry({ "#a-desc":"laptop", "#a-sup":"Dell", "#a-date":"2026-08-09",
+  "#a-cost":"1800", "#a-wp":"80" });
+vm.runInContext(`M.years.push({year:"2025-26"}); addAsset();`, routedAsset);
+t('an asset purchase date owns its first claim year',
+  vm.runInContext("fyOf(assetStartDate(M.assets[0]))", routedAsset) === '2026-27',
+  vm.runInContext("fyOf(assetStartDate(M.assets[0]))", routedAsset), '2026-27');
+t('adding that asset also keeps the current view',
+  vm.runInContext("activeYear", routedAsset) === '2025-26', vm.runInContext("activeYear", routedAsset), '2025-26');
+t('the asset confirmation names its first claim year',
+  vm.runInContext("entryNotice.text", routedAsset).includes('FY 2026–27'),
+  vm.runInContext("entryNotice.text", routedAsset), 'mentions FY 2026–27');
 
 console.log("\n" + R.pass + " passed, " + R.fail + " failed\n");
 process.exit(R.fail ? 1 : 0);
