@@ -195,9 +195,9 @@ it back. Guess, mark your reasoning in `basis`, and let the person with the rece
 | `work_pct` | **yes** | `{"2025-26": 0}` — **an object keyed by financial year**, not a bare number. See the warning below. |
 | `category` | no | From the asset taxonomy only — `Computers`, `Peripherals`, `Furniture`. Never an expense category. |
 | `basis` | no | As for an expense. |
-| `treatment` | **never** | Derived from cost. Emitting it lets a converter overrule the $300 and $1,000 tests. |
+| `treatment` | **never** | Derived from cost. A supplied value **is** honoured — the ledger fills it only when absent, it does not strip it — so emitting one overrules the $300 and $1,000 tests. An integrity check flags a treatment that contradicts the cost, but by then it is in the file. This one is trusted rather than enforced, because Import also merges hand-classified ledger files and discarding their treatment would undo a real decision. |
 | `effective_life` | no | Omit unless the document states it; the ledger falls back to the item portion of `item_supplier`. |
-| `asset_id` | **never** | Allocated on import, and a supplied one collides. |
+| `asset_id` | **never** | Discarded and reallocated on import, always — supplying one changes nothing. An id minted elsewhere promises nothing about the year it encodes or the ids this ledger hands out next. Identity across imports is `source` + `source_ref`. |
 
 An item-only value is accepted when a source genuinely cannot name the supplier, but it is
 unfinished identity. If that asset is sent to Expenses, the ledger asks for the supplier;
@@ -247,6 +247,43 @@ as the output. This is a row a person has to finish.
 | Officeworks, no detail | $187.00 | unknown | `expenses` | under $300 — the question does not arise |
 | Officeworks, no detail | $640.00 | unknown | **`assets`** | over $300 and unresolved → the recoverable side |
 
+## Fields — an income row
+
+The ledger imports `income` exactly as it imports the other two collections — same dedupe, same
+undo, same skip-what-you-already-have. A converter reading a broker or platform export emits
+rows here.
+
+Common to every row:
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `issuer`, `source`, `source_ref` | **yes** | Exactly as for an expense. |
+| `date` | **yes** | `YYYY-MM-DD`. Payment or disposal date — it decides the financial year. |
+| `type` | **yes** | One of `dividend`, `distribution`, `interest`, `foreign`, `disposal`, `staking`, `airdrop`. Nothing else is recognised. |
+| `holding` | **yes** | The security or account, as you would recognise it: `FUNDB`, `Example Savings Account`. It is the grouping key and the display name. |
+| `id` | **never** | Allocated on import; a colliding one is re-keyed. |
+
+Then, by `type` — the amount field is **not** the same for all of them, which is the mistake
+most easily made here:
+
+| `type` | Amount field | Return label | Also read |
+| --- | --- | --- | --- |
+| `interest` | `gross_aud` | I10 | — |
+| `dividend` | `franked` | I11 | `unfranked`, `credit` (franking credit — becomes an offset) |
+| `distribution` | `gross_aud` | I13 | the AMMA components below, when the statement gives them |
+| `foreign` | `gross_foreign` | I20 | `fx_rate`. Emit **gross, before withholding** |
+| `disposal` | `proceeds` | I18 | `cost_base`, `acquired` — the CGT discount needs the acquisition date |
+| `staking`, `airdrop` | `gross_aud` | I24 | AUD value on the date received |
+
+A trust distribution is one payment made of parts. Where the annual tax statement itemises
+them, emit the components rather than a single gross figure — `franked`, `unfranked`, `credit`,
+`foreign_aud`, `tax_withheld_aud`, `cg_discount`, `cg_other`, `amit_cost_base_net`. Any non-zero
+component switches the row to component mode, and `gross_aud` is then ignored. Capital gain
+components reach the return through the CGT calculation, not as a second income line.
+
+Dedupe for income hashes `date`, `type`, `holding` and the amount, alongside the usual
+`source` + `source_ref`.
+
 ## `work_pct` is always 0
 
 A converter never sets a work-use percentage. Not when the supplier rule matched, not when
@@ -270,12 +307,22 @@ Because both are valid, **shape can never be an identity**. `issuer` can.
 ## How the ledger uses it
 
 1. **Same file re-imported** — matched on `source` + `source_ref`. Exact, always right.
-2. **Same charge from a different converter** — matched on `issuer` + `date` + `amount`.
-3. **Overlapping coverage** — an issuer holding rows from more than one `source` in one year
+2. **Same charge seen twice** — matched on `date` + `supplier` + `amount`, on the supplier
+   *as written*. Deliberately tight: layer 2 **skips rows silently**, so it only fires where
+   the match is beyond argument. It does not use `issuer`, because a looser key here would
+   drop a genuine second charge without saying so.
+3. **Overlapping coverage** — an `issuer` holding rows from more than one `source` in one year
    raises a warning. It cannot know which to keep, so it says so rather than choosing.
 
-Layer 3 is the one that catches the Optus case, and it only works because every source
-agrees on `issuer`.
+Layer 3 is the one that catches the Optus case, and it only works because every source agrees
+on `issuer`. That is also why the split exists: the loose, cross-source key belongs on the
+layer that *warns*, and the strict key on the layer that *deletes*.
+
+Where a row carries no `issuer` — anything entered by hand — layer 3 falls back to the
+supplier name with company suffixes and punctuation stripped, so `Optus`, `OPTUS PTY LTD`
+and `Optus Pty. Ltd.` still group. What that fallback cannot do is join `Optus Internet` to
+`Optus Broadband`. Only the converter knows those are one merchant, and `issuer` is how it
+says so.
 
 ## Writing a converter
 

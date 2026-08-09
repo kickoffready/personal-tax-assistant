@@ -976,6 +976,15 @@ function normaliseSupplier(s){
     .replace(SUPPLIER_NOISE, " ")
     .replace(/\s+/g, " ").trim();
 }
+// A converter emits `issuer` as its canonical, stable name for a merchant — "optus" for
+// every spelling of Optus Pty Ltd. IMPORT-FORMAT.md calls it the join key across sources, so
+// it has to actually be one: prefer it over guessing the same key back out of a display name.
+// A field no calculation consumes is typing asked for and then thrown away — the reason
+// schema 3 dropped serial and evidence — so an inert issuer would have to be removed instead.
+// Hand-entered rows have no issuer and keep falling back to the normalised display name.
+function issuerKey(r, display){
+  return String(r && r.issuer || "").trim().toLowerCase() || normaliseSupplier(display);
+}
 function sourceOf(r){ return r.source || "entered by hand"; }
 
 // Every row from every source, keyed by year and normalised supplier. Used both by the
@@ -988,8 +997,8 @@ function supplierIndex(){
     (ix[k] = ix[k] || { fy, sup, sources:{} });
     ix[k].sources[src] = (ix[k].sources[src] || 0) + num(amt);
   };
-  for (const e of M.expenses) put(fyOf(e.date), normaliseSupplier(e.supplier), sourceOf(e), e.amount);
-  for (const a of M.assets)   put(fyOf(a.purchase_date), normaliseSupplier(assetSupplierName(a) || assetIdentity(a)), sourceOf(a), a.cost);
+  for (const e of M.expenses) put(fyOf(e.date), issuerKey(e, e.supplier), sourceOf(e), e.amount);
+  for (const a of M.assets)   put(fyOf(a.purchase_date), issuerKey(a, assetSupplierName(a) || assetIdentity(a)), sourceOf(a), a.cost);
   return ix;
 }
 
@@ -2487,8 +2496,11 @@ function applyImport(plan, from){
       M[kind].push(r);
     }
   for (const a of plan.add.assets) {
-    if (!a.asset_id || takenAssets.has(a.asset_id))
-      a.asset_id = allocateAssetId(fyOf(a.purchase_date), takenAssets);
+    // Always allocated here, never accepted from the file. IMPORT-FORMAT.md says a converter
+    // never emits one; honouring a non-colliding id made that advisory, and an id minted
+    // elsewhere carries no promise about the year it encodes or the ids this ledger will hand
+    // out next. Identity across imports is source + source_ref, which dedupe already uses.
+    a.asset_id = allocateAssetId(fyOf(a.purchase_date), takenAssets);
     takenAssets.add(a.asset_id);
     if (!a.treatment) a.treatment = treatmentFor(a.cost);
     M.assets.push(a);

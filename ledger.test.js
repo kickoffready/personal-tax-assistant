@@ -506,6 +506,46 @@ t('the re-keyed row is removed', M.expenses.length===1, M.expenses.length, 1);
 t('and the original keeps its id and amount', M.expenses[0].id==='kept' && M.expenses[0].amount===600,
   M.expenses[0].id+'/'+M.expenses[0].amount, 'kept/600');
 
+// IMPORT-FORMAT.md tells a converter it never emits asset_id. Honouring a non-colliding one
+// made that advisory: an id minted elsewhere promises nothing about the year it encodes or the
+// ids this ledger hands out next. Identity across imports is source + source_ref.
+console.log('\\n— a supplied asset_id is never trusted');
+setModel({years:[{year:'2025-26'}], assets:[]});
+activeYear='2025-26';
+applyImport(planImport({schema:5, assets:[
+  {asset_id:'A-9999-042',item_supplier:'Dell dock — Officeworks',source:'gmail',source_ref:'m1',
+   purchase_date:'2025-11-24',cost:310.32,work_pct:{'2025-26':0}}]}));
+t('the ledger allocates its own id', M.assets[0].asset_id!=='A-9999-042', M.assets[0].asset_id, 'not A-9999-042');
+t('and it encodes the purchase year', /^A-2026-/.test(M.assets[0].asset_id), M.assets[0].asset_id, 'A-2026-nnn');
+t('re-importing the same source_ref still skips as a duplicate',
+  (applyImport(planImport({schema:5, assets:[
+    {asset_id:'A-9999-042',item_supplier:'Dell dock — Officeworks',source:'gmail',source_ref:'m1',
+     purchase_date:'2025-11-24',cost:310.32,work_pct:{'2025-26':0}}]})), M.assets.length===1),
+  M.assets.length, 1);
+
+// issuer is documented as the join key across sources. It has to actually be one, or it is a
+// field nothing consumes — the reason schema 3 dropped serial and evidence.
+console.log('\\n— issuer joins two spellings of one merchant');
+// Deliberately a pair SUPPLIER_NOISE cannot join: stripping "pty ltd" collapses spellings of
+// one name, but "Optus Internet" and "Optus Broadband" stay two keys on the display name
+// alone. Only the converter knows they are one merchant, and issuer is how it says so.
+setModel({years:[{year:'2025-26'}], expenses:[
+  {id:'a',date:'2025-09-01',issuer:'optus',supplier:'Optus Internet',source:'gmail',source_ref:'g1',
+   amount:70,work_pct:100,label:'D5',category:'Information services'},
+  {id:'b',date:'2025-10-01',issuer:'optus',supplier:'Optus Broadband',source:'paypal',source_ref:'p1',
+   amount:70,work_pct:100,label:'D5',category:'Information services'}]});
+activeYear='2025-26';
+t('the display names alone would not join them',
+  normaliseSupplier('Optus Internet')!==normaliseSupplier('Optus Broadband'),
+  normaliseSupplier('Optus Internet')+' vs '+normaliseSupplier('Optus Broadband'), 'two keys');
+const ixKeys = Object.keys(supplierIndex());
+t('two spellings collapse to one issuer key', ixKeys.length===1, ixKeys.join(' | '), 'one key');
+t('and both sources hang off it',
+  Object.keys(supplierIndex()[ixKeys[0]].sources).sort().join(',')==='gmail,paypal',
+  Object.keys(supplierIndex()[ixKeys[0]].sources).sort().join(','), 'gmail,paypal');
+t('a hand-entered row with no issuer still keys off its supplier',
+  issuerKey({}, 'Optus Pty. Ltd.')==='optus', issuerKey({}, 'Optus Pty. Ltd.'), 'optus');
+
 // You are allowed to keep working while you decide whether the import was right.
 console.log('\\n— work done after the import survives the undo');
 setModel({years:[{year:'2025-26'}], expenses:[]});
