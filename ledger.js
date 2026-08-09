@@ -1730,12 +1730,28 @@ function renderLodgment(){
 // One block per fund, laid out in the order myTax asks, because that is the order you type in.
 // The labels are shown but they are not the unit of entry: myTax derives them from what you put
 // in the fund's block, which is why these figures appear here and not among the label rows.
+// A fund block is thirteen labels and a typical ETF distribution leaves most of them at nil, so
+// the figures actually being typed were outnumbered two to one by rows saying $0.00. They are
+// folded into one line instead of dropped: which labels came out nil is worth knowing — it is
+// the difference between a component that was considered and one that was never transcribed —
+// and myTax marks the occasional field required, where a zero has to be typed rather than left
+// blank. D6 is the opposite case and stays fully expanded: myTax requires all three of its boxes.
+function fundFieldsHTML(fields){
+  const isNil = amt => Math.abs(num(amt)) <= 0.005;
+  const shown = fields.filter(f => !isNil(f[2]));
+  const nil   = fields.filter(f => isNil(f[2]));
+  return `<ul>${shown.map(([lbl,name,amt]) => `<li>
+      <span>${lbl ? `<b>${lbl}.</b> ` : ""}${esc(name)}</span>
+      <span>${money(amt)} <button class="tiny" onclick="copyVal(${amt.toFixed(2)})">copy</button></span></li>`).join("")}
+    ${nil.length ? `<li class="nil"><span>${esc(nil.map(([lbl,name]) => lbl || name).join(", "))} — nil</span>
+      <span>leave blank unless myTax marks the field required</span></li>` : ""}</ul>`;
+}
+
 function renderFundBlocks(funds){
   if (!funds.length) return "";
   return `<h3>Managed fund distributions</h3>
     <p class="sub">myTax ▸ Income ▸ Managed fund distributions. Add one entry per fund and type these
-    figures into it — myTax fills 13U, 18A, 20E and the rest of the labels itself. A zero can be
-    left blank except where the form marks a field required.</p>
+    figures into it — myTax fills 13U, 18A, 20E and the rest of the labels itself.</p>
     ${funds.map(f => `<div class="lodge-row open">
       <div class="lodge-head">
         <span class="lodge-name"><b>${esc(f.name)}</b></span>
@@ -1747,9 +1763,7 @@ function renderFundBlocks(funds){
           myTax should show this fund's summary row as
           <b>${money(f.shareOfIncome)}</b> income and <b>${money(f.shareOfCredits)}</b> credits —
           if it does not, a field below went in wrong.</p>
-        <ul>${f.fields.map(([lbl,name,amt]) => `<li${amt ? "" : ' style="opacity:.55"'}>
-          <span>${lbl ? `<b>${lbl}.</b> ` : ""}${esc(name)}</span>
-          <span>${money(amt)} <button class="tiny" onclick="copyVal(${amt.toFixed(2)})">copy</button></span></li>`).join("")}</ul>
+        ${fundFieldsHTML(f.fields)}
       </div>
     </div>`).join("")}
     <div class="note aside"><b>Only managed funds belong in that section</b>

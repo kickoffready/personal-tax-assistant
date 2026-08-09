@@ -1072,6 +1072,31 @@ t('the franking credit is still a refundable offset',
 t('the foreign tax is still a non-refundable offset',
   near((OFF.find(o=>/Foreign/.test(o.name))||{}).amount, 30),
   JSON.stringify(OFF.map(o=>o.name)), 'Foreign income tax offset');
+
+// Thirteen labels, and a typical distribution leaves most at nil — so the figures actually being
+// typed were outnumbered two to one by rows reading $0.00. Folded, not dropped: which labels came
+// out nil is the difference between a component considered and one never transcribed, and myTax
+// marks the occasional field required, where a zero has to be typed rather than left blank.
+console.log('\\n— a fund block shows the figures being typed, not a column of zeros');
+const FF = fundFieldsHTML([
+  ['13U','Total non-primary production income',0.38],
+  ['13C','Total franked distribution',0],
+  ['13Q','Total franking credits',0],
+  ['','Capital gains - other method',0],
+  ['18A','Total net capital gain',43.56]]);
+const has = (s,x) => s.indexOf(x) !== -1;
+t('a figure keeps its own row and its copy button',
+  has(FF,'<b>13U.</b>') && has(FF,'copyVal(0.38)') && has(FF,'copyVal(43.56)'), '', 'both rows');
+t('only the figures get rows', FF.split('<li>').length-1===2, FF.split('<li>').length-1, 2);
+t('a nil label gets no row of its own', !has(FF,'<b>13C.</b>'), '', 'no 13C row');
+t('and nothing offers to copy a zero', !has(FF,'copyVal(0.00)'), '', 'no zero copy');
+t('the nil labels are still named, on one line',
+  has(FF,'13C, 13Q, Capital gains - other method — nil'), '', 'named together');
+t('and it says when a zero must be typed anyway',
+  has(FF,'marks the field required'), '', 'the exception');
+t('a fund with no nil labels gets no nil line',
+  !has(fundFieldsHTML([['13U','Total non-primary production income',12]]), 'class="nil"'),
+  '', 'no line');
 // The gain is real and still computed — it is just entered as the fund's 18A, not as I18.
 t('the capital gain is still worked out', near(D.cgt['2025-26'].netGain,300),
   D.cgt['2025-26'].netGain.toFixed(2),'300.00');
