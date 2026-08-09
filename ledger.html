@@ -821,10 +821,20 @@ function categoryOf(r){
     (r.item_supplier || r.description ? assetItemName(r) : "") || "expense";
 }
 
-function treatmentFor(cost){
+// Has a low-value pool been started? The choice to run one is optional, but allocating a single
+// low-cost asset makes it compulsory for every low-cost asset acquired that year and afterwards.
+function poolIsOpen(){ return M.assets.some(a => a.treatment === "pool"); }
+// The pool is a paperwork simplification — no effective life to justify, no part-year
+// apportionment — and this tool already does both of those. What it costs is permanent: a balance
+// that never reaches zero, a row that can never be dropped because the balance is recalculated
+// from it, and the three-box D6 split. So it is suggested only once the choice has actually been
+// made; before that an individual schedule is suggested, which terminates and can be retired.
+// Once open, the pool is compulsory for low-cost assets and the suggestion follows the law.
+// `poolOpen` is injectable so the rule stays a pure function of cost in tests.
+function treatmentFor(cost, poolOpen){
   const c = num(cost);
   if (c <= IMMEDIATE_THRESHOLD) return "immediate";
-  if (c < POOL_CEILING) return "pool";
+  if (c < POOL_CEILING) return (poolOpen === undefined ? poolIsOpen() : poolOpen) ? "pool" : "schedule";
   return "schedule";
 }
 
@@ -870,10 +880,27 @@ function allYears(){
   let firstPoolYear = null;
   M.assets.forEach(a => {
     let f = fyOf(assetStartDate(a));
-    if (!f || a.treatment !== "pool") return;
-    if (!firstPoolYear || f < firstPoolYear) firstPoolYear = f;
-    for (let i = 1; i < POOL_DISPLAY_YEARS; i++) {
+    if (!f) return;
+    if (a.treatment === "pool") {
+      if (!firstPoolYear || f < firstPoolYear) firstPoolYear = f;
+      for (let i = 1; i < POOL_DISPLAY_YEARS; i++) {
+        f = fyNext(f);
+        s.add(f);
+      }
+      return;
+    }
+    // A schedule has to pass through every year of its effective life for the same reason a
+    // pool does: derive() carries the adjustable value forward year by year, and a year that
+    // is not in this list is never walked. Skip one and the value never declines through it,
+    // so the next year present takes a full year's decline — a claim in a year the asset was
+    // already written off. Nothing else creates these years; an asset with no expenses beside
+    // it entered only its purchase and start year.
+    if (a.treatment !== "schedule") return;
+    const goneFY = a.disposal_date ? fyOf(a.disposal_date) : null;
+    const life = Math.ceil(num(a.effective_life) || suggestLife(assetItemName(a)) || 0);
+    for (let i = 1; i <= life; i++) {
       f = fyNext(f);
+      if (goneFY && f > goneFY) break;
       s.add(f);
     }
   });
@@ -936,20 +963,33 @@ function derive(){
     // ---- low-value pool
     const prev = pool[prevFY(fy, years)];
     const opening = prev ? prev.closing : 0;
-    let additions = 0, firstYearDeduction = 0;
+    let additions = 0, firstYearDeduction = 0, disposals = 0;
     for (const a of M.assets) {
       if (a.treatment !== "pool") continue;
-      if (fyOf(assetStartDate(a)) !== fy) continue;
-      const taxableCost = num(a.cost) * wpFrac(workPctFor(a, fy));
-      additions += taxableCost;
-      firstYearDeduction += taxableCost * POOL_FIRST_YEAR;
+      if (fyOf(assetStartDate(a)) === fy) {
+        const taxableCost = num(a.cost) * wpFrac(workPctFor(a, fy));
+        additions += taxableCost;
+        firstYearDeduction += taxableCost * POOL_FIRST_YEAR;
+      }
+      // A balancing adjustment event on a pooled asset does not remove it from the pool —
+      // nothing ever leaves. It reduces the closing balance by the taxable-use share of the
+      // termination value, which is why this is summed separately from additions and applied
+      // after the deduction rather than against it.
+      if (a.disposal_date && fyOf(a.disposal_date) === fy)
+        disposals += num(a.disposal_proceeds) * wpFrac(workPctFor(a, fy));
     }
     const ongoingDeduction = opening * POOL_ONGOING;
     const deduction = ongoingDeduction + firstYearDeduction;
+    // The deduction is charged on the OPENING balance, so a mid-year sale never reduces it.
+    // Only the closing balance moves. Where the termination value exceeds what is left, the
+    // pool stops at nil and the excess is assessable rather than becoming a negative balance
+    // that would quietly offset next year's deduction.
+    const closingBeforeDisposals = opening + additions - deduction;
+    const excess = Math.max(0, disposals - closingBeforeDisposals);
     // Kept apart because only one half can ever be attributed: the first-year 18.75% is
     // per asset, the ongoing 37.5% is charged on a balance no single asset owns.
     pool[fy] = { opening, additions, deduction, firstYear: firstYearDeduction, ongoing: ongoingDeduction,
-                 closing: Math.max(0, opening + additions - deduction) };
+                 disposals, excess, closing: Math.max(0, closingBeforeDisposals - disposals) };
   }
 
   // ---- retention: keep_until per asset
@@ -1158,6 +1198,11 @@ function buildLodgment(fy){
   const balAss = bal.filter(r => r.balancing > 0).reduce((s,r) => s + r.balancing, 0);
   if (balDed > 0.005) add(out.deductions, "D5", "balancing adjustment on disposal", balDed);
   if (balAss > 0.005) add(out.income, "I24", "balancing adjustment on disposal", balAss);
+  // A pooled asset has no per-asset row to carry a balancing adjustment, so its excess arrives
+  // from the pool itself: sale proceeds that outrun what is left in the balance are assessable.
+  const poolExcess = (derived.pool[fy] || {}).excess || 0;
+  if (poolExcess > 0.005)
+    add(out.income, "I24", "low-value pool — sale proceeds above the pool balance", poolExcess);
 
   // offsets — not deductions, and the two behave differently
   out.offsets = [];
@@ -1329,6 +1374,14 @@ function runChecks(){
     if (a.work_pct && typeof a.work_pct === "object" && Object.keys(a.work_pct).length > 1 && !a.basis)
       push("med", assetLabel(a) + " work-use % changes between years with no basis recorded",
         "A percentage that moves needs a note explaining why, kept at the time.");
+    // Until this was implemented, a sale entered against a pooled asset was accepted and
+    // ignored. Anyone who recorded one has D6 figures that have now changed, in a year that
+    // may already be lodged, so the row says so rather than the numbers quietly differing.
+    if (a.treatment === "pool" && a.disposal_date)
+      push("high", assetLabel(a) + " was sold out of the low-value pool in FY " + fyLabel(fyOf(a.disposal_date)),
+        "Its sale proceeds at the taxable-use percentage reduce the pool's closing balance that year, "
+        + "so every later D6 is smaller and any proceeds above the balance are assessable at item 24. "
+        + "If you already lodged a year using the old figures, check it against the Lodgment tab.");
   }
 
   // low-value pool is a one-way door
@@ -1476,8 +1529,23 @@ function setField(coll, id, field, value){
   }
   touch();
 }
+// The retention date on an asset is about the evidence, not the row. A pooled row is different
+// again: the pool balance is recalculated from it every time and never stored, so deleting one
+// rewrites every later year's D6 rather than just dropping a record. Say that instead of asking
+// the generic question — it is still the user's record to remove.
+function poolRowIsLoadBearing(coll, id){
+  if (coll !== "assets") return false;
+  const a = M.assets.find(r => r.asset_id === id);
+  if (!a || a.treatment !== "pool") return false;
+  return Object.values(derived.pool || {}).some(p => (p.closing || 0) > 0.005 || (p.deduction || 0) > 0.005);
+}
 function removeRow(coll, id){
-  if (!confirm("Delete this row? The record is only as good as what stays in it.")) return;
+  const warning = poolRowIsLoadBearing(coll, id)
+    ? "Delete this pooled asset?\n\nThe low-value pool is recalculated from this row, so every "
+      + "year's pool balance and D6 deduction will change — including years you may have already "
+      + "lodged. Keeping the evidence is a separate obligation from keeping this row."
+    : "Delete this row? The record is only as good as what stays in it.";
+  if (!confirm(warning)) return;
   M[coll] = M[coll].filter(r => (r.id || r.asset_id) !== id);
   touch();
 }
@@ -1513,13 +1581,20 @@ function moveWarnings(fy){
 
 // What the row will claim once it lands, so the confirmation can say so. Days-apportioned
 // depreciation is not guessed at here; a scheduled asset is described by its life instead.
-function claimPreview(cost, wp, fy, desc, life){
+function claimPreview(cost, wp, fy, desc, life, date){
   const t = treatmentFor(cost), full = num(cost) * wpFrac(wp);
   if (t === "immediate") return "written off at once, claiming " + money(full) + " at D5 in FY " + fyLabel(fy) + ".";
   if (t === "pool") return "allocated to the low-value pool, claiming " + money(full * POOL_FIRST_YEAR) +
     " at D6 in FY " + fyLabel(fy) + ", then 37.5% of the balance each year after.";
-  return "depreciated at D5 over an effective life of " + (num(life) || suggestLife(desc)) +
-    " years from " + fyLabel(fy) + ", apportioned by the days it was held.";
+  // The other two branches name the figure you would claim. A schedule has to as well — it is
+  // now the usual answer for a low-cost asset, and "apportioned by the days it was held" is not
+  // something anyone can turn into a number while deciding whether to press the button.
+  const years = num(life) || suggestLife(desc);
+  const days = date ? daysHeldIn(fy, date, null) : 0;
+  const firstYear = years && days ? full * (days / 365) / years : 0;
+  return "depreciated at D5 over an effective life of " + years + " years from " + fyLabel(fy)
+    + (firstYear > 0.005 ? ", claiming " + money(firstYear) + " in the first year" : "")
+    + ", apportioned by the days it was held.";
 }
 
 // The two mappings, as plain functions of a row, so the subtle parts — the work_pct shape,
@@ -1571,7 +1646,7 @@ function sendToAssets(id){
   const lines = ["Move “" + (desc || "this charge") + "” to Assets?", "",
     "As an expense it claims " + money(cost * wpFrac(wp)) + " at " + (e.label || "D5") +
       " in FY " + fyLabel(fy) + ".",
-    "As an asset costing " + money(cost) + " it will be " + claimPreview(cost, wp, fy, desc)];
+    "As an asset costing " + money(cost) + " it will be " + claimPreview(cost, wp, fy, desc, null, e.date)];
   const warn = moveWarnings(fy);
   if (warn.length) lines.push("", warn.join("\n"));
   if (!confirm(lines.join("\n"))) return;
@@ -1654,7 +1729,7 @@ function sendToExpenses(assetId){
   }
 
   const lines = ["Move “" + identity + "” to Expenses?", "",
-    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, item, a.effective_life),
+    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, item, a.effective_life, assetStartDate(a)),
     "As an expense it claims " + money(cost * wpFrac(wp)) + " in full, in FY " + fyLabel(fy) + "."];
   if (a.treatment === "pool") {
     // derive() rebuilds the pool from the original costs on every load, so taking an asset
@@ -2014,7 +2089,9 @@ function assetDetail(a){
       <div class="fld" style="flex:1;min-width:220px"><label>Basis for the Deductible %</label>
         <input value="${esc(a.basis || "")}" placeholder="why this percentage, decided when"
           onchange="setField('assets','${a.asset_id}','basis',this.value)"></div>
-      <div class="fld"><label>Keep records until</label><input class="mono" readonly value="${esc(derived.keep[a.asset_id]||"")}"></div>
+      <div class="fld"><label>Keep evidence until</label><input class="mono" readonly value="${esc(derived.keep[a.asset_id]||"")}"></div>
+      ${a.treatment === "pool" ? `<div class="fld" style="flex:1"><label>Keep this row</label>
+        <input readonly value="While the pool has a balance — the pool is recalculated from this row."></div>` : ""}
     </div>
     <div class="formrow" style="margin:10px 0 0">
       ${f("disposal_date","Disposal date","date")}
@@ -2067,6 +2144,10 @@ function poolAssetClaim(a, fy){
   const from = allocationYear ? parseInt(allocationYear.slice(0,4), 10) : NaN;
   const to = fy ? parseInt(fy.slice(0,4), 10) : NaN;
   if (a.treatment !== "pool" || !Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
+  // Sold: its termination value has already come off the pool balance, so rolling its original
+  // addition forward past that year would show a contribution it is no longer making.
+  const goneFY = a.disposal_date ? fyOf(a.disposal_date) : null;
+  if (goneFY && fy > goneFY) return null;
   let balance = num(a.cost) * wpFrac(workPctFor(a, allocationYear));
   for (let year = from; year <= to; year++) {
     const claim = balance * (year === from ? POOL_FIRST_YEAR : POOL_ONGOING);

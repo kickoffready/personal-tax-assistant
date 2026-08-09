@@ -109,7 +109,25 @@ t('and it keeps rolling', reportingYear('2027-09-01')==='2026-27', reportingYear
 
 console.log('\\n— treatment decided by cost, not work use');
 [[300,'immediate'],[301,'pool'],[999,'pool'],[1000,'schedule'],[1890,'schedule']]
-  .forEach(([c,w])=>t('$'+c+' → '+w, treatmentFor(c)===w, treatmentFor(c), w));
+  .forEach(([c,w])=>t('$'+c+' → '+w, treatmentFor(c,true)===w, treatmentFor(c,true), w));
+
+// Running a pool is a choice, and only the low-cost band depends on it. The paperwork the pool
+// saves — an effective life to justify, part-year apportionment — is work this tool already
+// does, while what it costs is permanent: a balance that never reaches zero and a row that can
+// never be dropped. So it is suggested once the choice has been made, not before.
+console.log('\\n— the low-cost band follows whether a pool has been opened');
+[[300,'immediate'],[301,'schedule'],[999,'schedule'],[1000,'schedule']]
+  .forEach(([c,w])=>t('$'+c+' → '+w+' with no pool open', treatmentFor(c,false)===w, treatmentFor(c,false), w));
+t('the $300 and $1,000 thresholds do not move either way',
+  treatmentFor(300,true)===treatmentFor(300,false) && treatmentFor(1890,true)===treatmentFor(1890,false),
+  'unchanged','unchanged');
+setModel({years:[{year:'2025-26'}],assets:[]});
+t('an empty ledger has no pool open', poolIsOpen()===false, poolIsOpen(), false);
+t('so a $500 asset is suggested an individual schedule', treatmentFor(500)==='schedule', treatmentFor(500),'schedule');
+M.assets.push({asset_id:'A-P0',item_supplier:'Dock — Dell',purchase_date:'2025-08-01',cost:600,
+  treatment:'pool',work_pct:{'2025-26':100}});
+t('allocating one low-cost asset opens the pool', poolIsOpen()===true, poolIsOpen(), true);
+t('and every later low-cost asset must follow it there', treatmentFor(500)==='pool', treatmentFor(500),'pool');
 
 console.log('\\n— depreciation: 3-year phone at 70%, held full years');
 setModel({years:[{year:'2025-26',marginal:0.32},{year:'2026-27'},{year:'2027-28'},{year:'2028-29'}],
@@ -247,8 +265,12 @@ t('a hand-edited charge shows the group as mixed',
   'mixed','mixed');
 
 console.log('\\n— treatment is computed, and only deliberately overridden');
+// A-P keeps the pool open independently of A-T, which is the row being toggled — otherwise
+// switching A-T to a schedule would close the pool and change what "the computed value" means
+// halfway through the test.
 setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-T',description:'dock',
-  category:'Peripherals',purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}]});
+  category:'Peripherals',purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}},
+  {asset_id:'A-P',description:'hub',purchase_date:'2025-08-01',cost:400,treatment:'pool',work_pct:{'2025-26':100}}]});
 activeYear='2025-26'; derive();
 t('the asset row uses the same one-selector presentation as Expenses',
   assetPurposeSelect('Peripherals','pool','noop()').includes('class="claim-purpose"') &&
@@ -270,6 +292,97 @@ t('choosing the computed value is not an override', M.assets[0].treatment_locked
   M.assets[0].treatment_locked, false);
 t('cost change moves an un-overridden treatment',
   (setField('assets','A-T','cost',2400), M.assets[0].treatment==='schedule'), M.assets[0].treatment,'schedule');
+
+// Both methods are offered in the register and both change every figure on a return, but the
+// suite had twelve prime_cost fixtures and not one diminishing. The formula is
+// opening x (days/365) x (200%/life) — note it reads the OPENING adjustable value each year,
+// where prime cost reads the original cost, which is the whole difference between them.
+console.log('\\n— diminishing value declines on the opening value, not the cost');
+setModel({years:['2025-26','2026-27','2027-28','2028-29'].map(y=>({year:y})),
+  assets:[{asset_id:'A-DV',item_supplier:'Workstation — Dell',purchase_date:'2025-07-01',cost:3000,
+    treatment:'schedule',effective_life:5,method:'diminishing',
+    work_pct:{'2025-26':100,'2026-27':100,'2027-28':100,'2028-29':100}}]});
+let DV=derive();
+[[0,'2025-26',3000,1200],[1,'2026-27',1800,720],[2,'2027-28',1080,433.18],[3,'2028-29',646.82,258.73]]
+  .forEach(([i,fy,open,dec])=>{
+    t('FY '+fy+' opens at '+open.toFixed(2), near(DV.dep[i].opening,open,0.02), DV.dep[i].opening.toFixed(2), open.toFixed(2));
+    t('and declines '+dec.toFixed(2), near(DV.dep[i].decline,dec,0.02), DV.dep[i].decline.toFixed(2), dec.toFixed(2));
+  });
+// 1 July 2027 to 30 June 2028 spans a leap day. The ATO formula divides by 365 regardless, so a
+// full year held in a leap FY is 366/365 of the annual rate — not a rounding error.
+t('a leap financial year is 366 days held', daysHeldIn('2027-28','2025-07-01',null)===366,
+  daysHeldIn('2027-28','2025-07-01',null), 366);
+t('so its decline is slightly above a plain 40%', DV.dep[2].decline > 1080*0.4,
+  DV.dep[2].decline.toFixed(2), 'above 432.00');
+t('the same asset on prime cost declines a flat fifth of cost', (() => {
+    M.assets[0].method='prime_cost'; const P2=derive();
+    return near(P2.dep[0].decline,600) && near(P2.dep[1].decline,600);
+  })(), 'flat', '600.00 each year');
+M.assets[0].method='diminishing'; DV=derive();
+t('decline never exceeds what is left to write off',
+  DV.dep.every(r => r.decline <= r.opening + 0.005), 'capped', 'capped');
+
+// Selling a pooled asset used to do nothing at all: the sale was enterable, accepted and
+// ignored, so the pool kept deducting on a balance the proceeds should have reduced and the
+// excess was never declared. RULES.md described this as built while derive() did not read
+// disposal_date for a pooled row at all.
+console.log('\\n— selling a pooled asset reduces the pool and can produce income');
+const POOLED = (extra='') => ({years:['2024-25','2025-26','2026-27','2027-28'].map(y=>({year:y})),
+  assets:[{asset_id:'A-1',item_supplier:'Dock — Officeworks',purchase_date:'2024-09-01',cost:600,
+    treatment:'pool',work_pct:{'2024-25':100}, ...JSON.parse(extra||'{}')}]});
+
+setModel(POOLED('{"disposal_date":"2025-11-01","disposal_proceeds":400}'));
+activeYear='2025-26'; let PD=derive();
+t('the deduction is charged on the opening balance, so a mid-year sale does not reduce it',
+  near(PD.pool['2025-26'].deduction,182.81), PD.pool['2025-26'].deduction.toFixed(2),'182.81');
+t('proceeds at the taxable-use share come off the closing balance',
+  near(PD.pool['2025-26'].disposals,400), PD.pool['2025-26'].disposals,400);
+t('which cannot go below nil', PD.pool['2025-26'].closing===0, PD.pool['2025-26'].closing, 0);
+t('the amount above the balance is assessable', near(PD.pool['2025-26'].excess,95.31),
+  PD.pool['2025-26'].excess.toFixed(2),'95.31');
+t('and reaches the return at item 24', near(PD.lodgment['2025-26'].income.I24.total,95.31),
+  PD.lodgment['2025-26'].income.I24.total.toFixed(2),'95.31');
+t('an emptied pool claims nothing the next year',
+  !PD.lodgment['2026-27'].deductions.D6, PD.lodgment['2026-27'].deductions.D6, 'no D6 line');
+t('and the sold row stops showing a share it no longer contributes',
+  poolAssetClaim(M.assets[0],'2026-27')===null, poolAssetClaim(M.assets[0],'2026-27'), null);
+t('the sale is flagged, because a year already lodged now has different figures',
+  derive().warnings.some(w=>w.sev==='high' && /sold out of the low-value pool/.test(w.title)),
+  derive().warnings.map(w=>w.title).join('|'), 'a high finding');
+
+// Proceeds under the balance reduce it without producing income.
+setModel(POOLED('{"disposal_date":"2025-11-01","disposal_proceeds":100}'));
+activeYear='2025-26'; let PS=derive();
+t('a smaller sale just reduces the balance', near(PS.pool['2025-26'].closing,204.69),
+  PS.pool['2025-26'].closing.toFixed(2),'204.69');
+t('with nothing assessable', PS.pool['2025-26'].excess===0, PS.pool['2025-26'].excess, 0);
+t('and the pool keeps running next year', PS.pool['2026-27'].deduction>0.005,
+  PS.pool['2026-27'].deduction.toFixed(2),'a deduction');
+
+// Regression: an undisposed pool is untouched by any of this.
+setModel(POOLED());
+activeYear='2025-26'; let PU=derive();
+t('a pool with no disposal is unchanged', near(PU.pool['2025-26'].deduction,182.81) && PU.pool['2025-26'].excess===0,
+  PU.pool['2025-26'].deduction.toFixed(2)+'/'+PU.pool['2025-26'].excess,'182.81/0');
+
+// The retention date is about the evidence. The row is a separate obligation the ledger imposes
+// on itself, because the pool balance is recalculated from it and never stored — so deleting one
+// rewrites every later year rather than dropping a record.
+console.log('\\n— deleting a pooled row is not the same as letting its evidence lapse');
+t('the row is load-bearing while the pool has a balance',
+  poolRowIsLoadBearing('assets','A-1')===true, poolRowIsLoadBearing('assets','A-1'), true);
+CONFIRMED.length = 0;
+removeRow('assets','A-1');
+t('so the question names what will actually change',
+  /pool is recalculated from this row/.test(CONFIRMED.join(' ')), CONFIRMED.join(' ').slice(0,70), 'the specific warning');
+t('and says the change reaches years already lodged',
+  /already lodged/.test(CONFIRMED.join(' ')), 'mentioned', 'mentioned');
+t('the row still goes when you say yes', M.assets.length===0, M.assets.length, 0);
+setModel({years:[{year:'2025-26'}],expenses:[{id:'x',date:'2025-09-01',supplier:'Union',amount:600,work_pct:100,label:'D5'}]});
+derive(); CONFIRMED.length = 0;
+removeRow('expenses','x');
+t('an ordinary row keeps the ordinary question',
+  /only as good as what stays in it/.test(CONFIRMED.join(' ')), CONFIRMED.join(' ').slice(0,60), 'the generic warning');
 
 console.log('\\n— a pooled asset claims at D6, and says so');
 setModel({years:[{year:'2025-26'},{year:'2026-27'}], assets:[{asset_id:'A-D',description:'Dell',
@@ -1223,12 +1336,26 @@ t('total claimed = cost x work %',
 t('retention runs from the last real claim, not the last year held',
   D.keep['A-Z']==='2034-06-30', D.keep['A-Z'],'2034-06-30');
 
-console.log('\\n— nothing appears for a year you have not created');
+// This used to assert that a schedule produced one row per year you had created, so an asset
+// bought with nothing else beside it depreciated for exactly one year and then stopped. That
+// was the bug: derive() carries the adjustable value forward by walking the year list, so a
+// year missing from it is never walked, the value never declines through it, and the next year
+// that does exist takes a full year's decline — a deduction in a year already written off. A
+// schedule now creates its own years, exactly as a pool already did.
+console.log('\\n— a schedule creates the years its own effective life needs');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-Y',description:'iPhone',
   purchase_date:'2026-02-15',cost:2164,treatment:'schedule',effective_life:3,
-  method:'prime_cost',work_pct:{'2025-26':70}}]});
+  method:'prime_cost',work_pct:{'2025-26':70,'2026-27':70,'2027-28':70,'2028-29':70}}]});
 D=derive();
-t('one year in the model = one row', D.dep.length===1, D.dep.length, 1);
+t('a 3-year life spans four financial years from a February purchase',
+  D.dep.length===4, D.dep.length, 4);
+t('and writes off the whole cost across them',
+  near(D.dep.reduce((s,r)=>s+r.decline,0), 2164, 0.02),
+  D.dep.reduce((s,r)=>s+r.decline,0).toFixed(2), '2164.00');
+t('the first year is apportioned by days held, not given a full year',
+  D.dep[0].decline < 2164/3, D.dep[0].decline.toFixed(2), 'less than a full year');
+t('nothing is claimed after the asset is written off',
+  !D.dep.some(r => r.year > '2028-29'), D.dep.map(r=>r.year).join(','), 'stops at 2028-29');
 
 
 `;
@@ -1709,8 +1836,8 @@ t('the converter identity survives',
   A("source") === "gmail" && A("source_ref") === "msg-abc",
   A("source") + "/" + A("source_ref"), 'gmail/msg-abc');
 t('the basis survives', A("basis") === "used for the work laptop", A("basis"), 'used for the work laptop');
-t('treatment is computed from the cost, not carried',
-  A("treatment") === "pool", A("treatment"), 'pool ($301–999)');
+t('treatment is computed on arrival, not carried from the expense',
+  A("treatment") === "schedule", A("treatment"), 'schedule — $301–999 with no pool open');
 t('the expense is gone', vm.runInContext("M.expenses.length", one) === 0,
   vm.runInContext("M.expenses.length", one), 0);
 
@@ -1750,16 +1877,35 @@ vm.runInContext(DOCK + `
 `, claim);
 t('as an expense it claims its whole cost at D5',
   near(vm.runInContext('d5before', claim), 310.32), vm.runInContext('d5before', claim), 310.32);
-t('as a pooled asset it claims 18.75% at D6',
-  near(vm.runInContext('d6after', claim), 58.19), vm.runInContext('d6after', claim).toFixed(2), 58.19);
-t('and nothing is left behind at D5',
-  near(vm.runInContext('d5after', claim), 0), vm.runInContext('d5after', claim), 0);
+// With no pool open the dock arrives on an individual schedule: a 3-year life suggested from
+// the item, apportioned from 1 August. The point of the move is unchanged — a thing stops
+// claiming its whole cost in one year — only the route it takes to get there.
+t('as a scheduled asset it depreciates instead',
+  near(vm.runInContext('d5after', claim), 94.65), vm.runInContext('d5after', claim).toFixed(2), 94.65);
+t('so the whole cost is no longer claimed this year',
+  vm.runInContext('d5after', claim) < 310.32, vm.runInContext('d5after', claim).toFixed(2), 'well under 310.32');
+t('and it is not in the pool, which was never opened',
+  near(vm.runInContext('d6after', claim), 0), vm.runInContext('d6after', claim), 0);
 
 // The confirmation is the whole safety net, so it has to state both numbers.
 t('the confirmation names what is claimed today',
   dup.CONFIRMED.join(" ").indexOf("$310.32") !== -1, dup.CONFIRMED.join(" ").slice(0,80), 'mentions $310.32');
 t('and what will be claimed instead',
-  dup.CONFIRMED.join(" ").indexOf("$58.19") !== -1, dup.CONFIRMED.join(" ").slice(0,80), 'mentions $58.19');
+  dup.CONFIRMED.join(" ").indexOf("$94.65") !== -1, dup.CONFIRMED.join(" ").slice(0,120), 'mentions $94.65');
+
+// The pool route still exists and still has to be right — it is just no longer the default.
+const intoPool = mv();
+vm.runInContext(`M.assets.push({ asset_id:"A-POOL", item_supplier:"Hub — Dell",
+    purchase_date:"2025-07-01", cost:400, treatment:"pool", work_pct:{"2025-26":100} });`
+  + DOCK + ` sendToAssets("e-1"); derive();
+  var after = buildLodgment("2025-26").deductions;
+  movedTreatment = M.assets.find(a => a.asset_id !== "A-POOL").treatment;
+  poolD6 = after.D6 ? after.D6.total : 0;`, intoPool);
+t('a dock moved into an open pool is pooled, not scheduled',
+  vm.runInContext('movedTreatment', intoPool)==='pool', vm.runInContext('movedTreatment', intoPool), 'pool');
+t('and claims 18.75% of both assets at D6',
+  near(vm.runInContext('poolD6', intoPool), (310.32+400)*0.1875),
+  vm.runInContext('poolD6', intoPool).toFixed(2), ((310.32+400)*0.1875).toFixed(2));
 
 // ---- back the other way ----
 const trip = mv();
