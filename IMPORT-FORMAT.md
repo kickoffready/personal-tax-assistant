@@ -58,7 +58,8 @@ PayPal issuing an invoice, and only then is it the issuer.
 | `basis` | no | Why this row exists and what a human still has to decide. |
 | `evidence` | no | A link or path back to the original document. |
 
-Plus the file wrapper: `{ "schema": 2, "years": [], "assets": [], "expenses": [], "income": [] }`.
+Plus the file wrapper: `{ "schema": 5, "years": [], "assets": [], "expenses": [], "income": [] }`.
+Older schema files still migrate when opened, but a new converter emits the current shape.
 
 An **asset** row is shaped differently and is described under *Assets or expenses* below.
 
@@ -188,16 +189,21 @@ it back. Guess, mark your reasoning in `basis`, and let the person with the rece
 | Field | Required | Notes |
 | --- | --- | --- |
 | `issuer`, `source`, `source_ref` | **yes** | Exactly as for an expense. Identity does not change with the collection. |
-| `description` | **yes** | The item, specific enough to imply an effective life: `14-inch MacBook Pro`, not `computer gear`. The ledger reads this to guess the life when you do not supply one. |
-| `supplier` | yes | Display name. |
+| `item_supplier` | **yes** | One display value in the exact form `Item — Supplier`, for example `14-inch MacBook Pro — Apple`. Make the item specific enough to imply an effective life. The ledger splits on the **final exact** ` — `: the item side drives item hints and the supplier side drives duplicate/source checks and an Expense move. |
 | `purchase_date` | **yes** | `YYYY-MM-DD`. Replaces `date`. |
+| `start_date` | no | First used or installed ready for income-producing use. Omit when the source cannot prove it; the ledger shows `purchase_date` as the explicit fallback for review. |
 | `cost` | **yes** | Replaces `amount`. The paid, GST-inclusive figure — same rule, and the one the $300 test is applied to. |
 | `work_pct` | **yes** | `{"2025-26": 0}` — **an object keyed by financial year**, not a bare number. See the warning below. |
 | `category` | no | From the asset taxonomy only — `Computers`, `Peripherals`, `Furniture`. Never an expense category. |
 | `basis` | no | As for an expense. |
 | `treatment` | **never** | Derived from cost. Emitting it lets a converter overrule the $300 and $1,000 tests. |
-| `effective_life` | no | Omit unless the document states it; the ledger falls back to the description. |
+| `effective_life` | no | Omit unless the document states it; the ledger falls back to the item portion of `item_supplier`. |
 | `asset_id` | **never** | Allocated on import, and a supplied one collides. |
+
+An item-only value is accepted when a source genuinely cannot name the supplier, but it is
+unfinished identity. If that asset is sent to Expenses, the ledger asks for the supplier;
+cancelling leaves the asset unchanged. When a converter knows only the merchant, emit
+`Review item — Supplier` rather than repeating the merchant on both sides.
 
 > **`work_pct` on an asset must be present and must be FY-keyed.** An asset whose `work_pct`
 > is missing is read as **100%** — `workPctFor()` returns 100 for `undefined`. It is the only
@@ -238,7 +244,7 @@ as the output. This is a row a person has to finish.
 | Anthropic | $34.00 | service | `expenses` | recurs |
 | USB-C cable, shipped | $29.00 | thing | `expenses` | under $300 — same claim either way |
 | Dell dock, shipped | $310.32 | thing | **`assets`** | over $300 → pooled, $58.19 in year one |
-| MacBook Pro, Apple Store | $3,499.00 | thing | **`assets`** | description decides it, not the issuer → scheduled |
+| MacBook Pro, Apple Store | $3,499.00 | thing | **`assets`** | the item portion decides it, not the issuer → scheduled |
 | Officeworks, no detail | $187.00 | unknown | `expenses` | under $300 — the question does not arise |
 | Officeworks, no detail | $640.00 | unknown | **`assets`** | over $300 and unresolved → the recoverable side |
 

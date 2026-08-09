@@ -141,13 +141,42 @@ const ACK_VERSION = "2026-08-09.1";
 // Move labels name the destination, never the number of rows they affect. Import correction
 // is common enough that move and delete live beside Details on every recorded register row.
 const TO_ASSETS = "→ Assets", TO_EXPENSES = "→ Expenses", DELETE_LABEL = "del";
+const ASSET_IDENTITY_SEPARATOR = " — ";
+const REVIEW_ASSET_ITEM = "Review item";
 
 /* ============================================================
    STATE — only what a human typed is persisted
    ============================================================ */
 
+// Assets use one human-readable identity value. The final exact separator is structural:
+// everything before it describes the item, and everything after it names the supplier.
+// Old ledgers and converter files may still carry the two legacy fields, so every reader
+// has a compatibility fallback while migrate() normalises persisted data to schema 5.
+function joinAssetIdentity(item, supplier){
+  let name = String(item || "").trim();
+  const shop = String(supplier || "").trim();
+  if (shop && (!name || name.toLowerCase() === shop.toLowerCase())) name = REVIEW_ASSET_ITEM;
+  if (shop) return (name || REVIEW_ASSET_ITEM) + ASSET_IDENTITY_SEPARATOR + shop;
+  return name || REVIEW_ASSET_ITEM;
+}
+function splitAssetIdentity(value){
+  const identity = String(value || "").trim();
+  const at = identity.lastIndexOf(ASSET_IDENTITY_SEPARATOR);
+  if (at < 0) return { item:identity, supplier:"" };
+  return {
+    item: identity.slice(0, at).trim() || REVIEW_ASSET_ITEM,
+    supplier: identity.slice(at + ASSET_IDENTITY_SEPARATOR.length).trim()
+  };
+}
+function assetIdentity(a){
+  const current = String(a && a.item_supplier || "").trim();
+  return current || joinAssetIdentity(a && a.description, a && a.supplier);
+}
+function assetItemName(a){ return splitAssetIdentity(assetIdentity(a)).item; }
+function assetSupplierName(a){ return splitAssetIdentity(assetIdentity(a)).supplier; }
+
 function emptyModel() {
-  return { schema:4, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+  return { schema:5, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
 }
 
 // schema 1 stored work use as a fraction (0.7). schema 2 stores it as a percentage (70),
@@ -157,9 +186,12 @@ function emptyModel() {
 // is typing asked for and then thrown away, and leaving it in the file implies it is
 // doing work.
 // schema 4 drops an EXPENSE's description. A charge is identified by who you bought from,
-// and "Acme Cloud Plus" then "Cloud Plus storage (200GB)" is the same fact written twice. An
-// ASSET keeps its description — that one is load-bearing, because suggestLife() reads it
-// to guess an effective life. Old files still load: convert once, on the way in.
+// and "Acme Cloud Plus" then "Cloud Plus storage (200GB)" is the same fact written twice. If an
+// old row has no supplier, its description becomes the supplier before that field is removed,
+// preserving the only identity available instead of grouping the charge as "unattributed". An
+// ASSET keeps one item_supplier identity. Schema 5 joins the old asset description and
+// supplier without losing either value; helpers split it only where a calculation needs the
+// item or a correction needs the supplier. Old files still load: convert once, on the way in.
 function migrate(m){
   if (!m) return m;
   const v = num(m.schema) || 1;
@@ -178,9 +210,22 @@ function migrate(m){
     (m.years  || []).forEach(y => { delete y.taxable_income; delete y.payg_withheld; });
   }
   if (v < 4) {
-    (m.expenses || []).forEach(e => { delete e.description; });
+    (m.expenses || []).forEach(e => {
+      if (!String(e.supplier || "").trim()) {
+        const legacyIdentity = String(e.description || "").trim();
+        if (legacyIdentity) e.supplier = legacyIdentity;
+      }
+      delete e.description;
+    });
   }
-  m.schema = 4;
+  // Normalise even a mislabeled incoming file: converters are external to the ledger and a
+  // schema number must not leave two competing asset identities in memory.
+  (m.assets || []).forEach(a => {
+    a.item_supplier = String(a.item_supplier || "").trim() || joinAssetIdentity(a.description, a.supplier);
+    delete a.description;
+    delete a.supplier;
+  });
+  m.schema = 5;
   return m;
 }
 let M = emptyModel();
@@ -314,8 +359,11 @@ function suggestLabel(supplier, desc){
 function suggestCategory(supplier, desc, kind){
   kind = kind === "assets" ? "assets" : "expenses";
   const hay = (supplier||"") + " " + (desc||"");
-  const prior = (kind === "assets" ? M.assets : M.expenses).find(r => r.supplier && supplier &&
-    String(r.supplier).toLowerCase() === String(supplier).toLowerCase() && r.category);
+  const prior = (kind === "assets" ? M.assets : M.expenses).find(r => {
+    const priorSupplier = kind === "assets" ? assetSupplierName(r) : r.supplier;
+    return priorSupplier && supplier &&
+      String(priorSupplier).toLowerCase() === String(supplier).toLowerCase() && r.category;
+  });
   if (prior) return prior.category;                 // whatever you called it last time wins
   for (const [re,cat] of CATEGORY_HINTS[kind]) if (re.test(hay)) return cat;
   return "";
@@ -350,7 +398,7 @@ function purposeDisplay(p){ return p ? p.label + " · " + p.name : "review purpo
 // purpose. Asset category and treatment remain separate stored facts because the calculations
 // use them independently; this function only combines them for the person reading the row.
 function assetPurposeDisplay(category, treatment){
-  if (!treatment) return "Enter cost · " + (category || "review category");
+  if (!treatment) return category || "Review category";
   return TREATMENT_CODE[treatment] + " · " + (category || "Review category")
     + " — " + TREATMENT_NAME[treatment];
 }
@@ -451,7 +499,10 @@ function chooseGroupCategory(key, value){
   setGroupField(key, "category", value);
 }
 
-function categoryOf(r){ return (r.category || "").trim() || r.supplier || r.description || "expense"; }   // description: assets only
+function categoryOf(r){
+  return (r.category || "").trim() || r.supplier ||
+    (r.item_supplier || r.description ? assetItemName(r) : "") || "expense";
+}
 
 function treatmentFor(cost){
   const c = num(cost);
@@ -523,7 +574,7 @@ function derive(){
       if (a.treatment !== "schedule") continue;
       const days = daysHeldIn(fy, assetStartDate(a), a.disposal_date);
       if (days <= 0) continue;
-      const life = num(a.effective_life) || suggestLife(a.description);
+      const life = num(a.effective_life) || suggestLife(assetItemName(a));
       const cost = num(a.cost);
       const opening = assetState[a.asset_id] === undefined ? cost : assetState[a.asset_id];
       // Fully written off and not disposed of: no claim, so no row. A zero row is
@@ -540,7 +591,7 @@ function derive(){
       // remaining adjustable value. Positive is assessable, negative deductible.
       const disposedNow = a.disposal_date && fyOf(a.disposal_date) === fy;
       const balancing = disposedNow ? (num(a.disposal_proceeds) - closing) * wpFrac(wp) : 0;
-      dep.push({ asset_id:a.asset_id, description:a.description, year:fy,
+      dep.push({ asset_id:a.asset_id, description:assetItemName(a), year:fy,
         opening, days_held:days, decline, work_pct:wp,
         deductible: decline * wpFrac(wp), closing, balancing, label:"D5" });
     }
@@ -687,7 +738,7 @@ function buildLodgment(fy){
     if (a.treatment !== "immediate") continue;
     if (fyOf(assetStartDate(a)) !== fy) continue;
     add(out.deductions, "D5", categoryOf(a), num(a.cost) * wpFrac(workPctFor(a, fy)),
-        (a.description || a.supplier || "asset") + " (immediate, ≤$300)");
+        assetIdentity(a) + " (immediate, ≤$300)");
   }
   // scheduled depreciation
   const depRows = derived.dep.filter(r => r.year === fy);
@@ -706,7 +757,7 @@ function buildLodgment(fy){
       if (a.treatment !== "pool" || fyOf(assetStartDate(a)) !== fy) continue;
       const share = num(a.cost) * wpFrac(workPctFor(a, fy)) * POOL_FIRST_YEAR;
       if (share <= 0.005) continue;
-      add(out.deductions, "D6", categoryOf(a), share, (a.description || a.supplier || a.asset_id) + " (first year)");
+      add(out.deductions, "D6", categoryOf(a), share, assetIdentity(a) + " (first year)");
     }
     if (p.ongoing > 0.005)
       add(out.deductions, "D6", "pool balance brought forward", p.ongoing);
@@ -782,7 +833,7 @@ function supplierIndex(){
     ix[k].sources[src] = (ix[k].sources[src] || 0) + num(amt);
   };
   for (const e of M.expenses) put(fyOf(e.date), normaliseSupplier(e.supplier), sourceOf(e), e.amount);
-  for (const a of M.assets)   put(fyOf(a.purchase_date), normaliseSupplier(a.supplier || a.description), sourceOf(a), a.cost);
+  for (const a of M.assets)   put(fyOf(a.purchase_date), normaliseSupplier(assetSupplierName(a) || assetIdentity(a)), sourceOf(a), a.cost);
   return ix;
 }
 
@@ -1004,33 +1055,33 @@ function claimPreview(cost, wp, fy, desc, life){
 function asAssetRow(e){
   const fy = fyOf(e.date);
   const cost = num(e.amount);
-  // An expense has no description to carry, so the asset arrives named after its supplier
-  // and wants renaming. suggestLife() matches item words, not merchants, so the effective
-  // life falls to the 3-year default until it does.
-  const desc = (e.supplier || "").trim();
+  // An expense has no item name to carry, so the asset arrives explicitly marked for
+  // review while preserving the supplier in the same identity field.
+  const item = REVIEW_ASSET_ITEM;
+  const supplier = (e.supplier || "").trim();
   return {
     asset_id: allocateAssetId(fy),
-    description: desc, supplier: e.supplier || "",
+    item_supplier: joinAssetIdentity(item, supplier),
     purchase_date: e.date, start_date: e.date, cost,
     treatment: treatmentFor(cost),
     // Never omitted: workPctFor() reads a missing work_pct as 100%, the one default in
     // the ledger that errs toward over-claiming.
     work_pct: { [fy]: e.work_pct === undefined ? 100 : num(e.work_pct) },
     // Re-derived, never carried: an expense category is not offered by the asset picker.
-    category: suggestCategory(e.supplier, desc, "assets"),
+    category: suggestCategory(supplier, item, "assets"),
     basis: e.basis || "",
     issuer: e.issuer || "", source: e.source || "", source_ref: e.source_ref || ""
   };
 }
-function asExpenseRow(a){
-  const desc = (a.description || a.supplier || "").trim();
+function asExpenseRow(a, supplier){
+  const item = assetItemName(a);
   return {
     id: uid("e"), date: a.purchase_date,
-    supplier: a.supplier || "",
+    supplier,
     amount: num(a.cost),
     work_pct: workPctFor(a, fyOf(assetStartDate(a))),
-    label: suggestLabel(a.supplier, desc),
-    category: suggestCategory(a.supplier, desc, "expenses"),
+    label: suggestLabel(supplier, item),
+    category: suggestCategory(supplier, item, "expenses"),
     basis: a.basis || "",
     issuer: a.issuer || "", source: a.source || "", source_ref: a.source_ref || ""
   };
@@ -1115,16 +1166,21 @@ function sendToExpenses(assetId){
   // A disposal computes a balancing adjustment, and possibly a CGT event, from fields that
   // do not exist on an expense. There is nothing to move it to.
   if ((a.status && a.status !== "in_use") || a.disposal_date || num(a.disposal_proceeds)) {
-    alert("“" + (a.description || a.asset_id) + "” has been disposed of.\n\n" +
+    alert("“" + assetIdentity(a) + "” has been disposed of.\n\n" +
       "The balancing adjustment is calculated from the disposal, and an expense row cannot hold it. " +
       "Clear the disposal first if this was entered by mistake.");
     return;
   }
   const fy = fyOf(assetStartDate(a)), cost = num(a.cost), wp = workPctFor(a, fy);
-  const desc = (a.description || a.supplier || "").trim();
+  const identity = assetIdentity(a), item = assetItemName(a);
+  let supplier = assetSupplierName(a);
+  if (!supplier) {
+    supplier = String(prompt("Supplier for “" + item + "” before moving it to Expenses:") || "").trim();
+    if (!supplier) return;
+  }
 
-  const lines = ["Move “" + (desc || a.asset_id) + "” to Expenses?", "",
-    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, desc, a.effective_life),
+  const lines = ["Move “" + identity + "” to Expenses?", "",
+    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, item, a.effective_life),
     "As an expense it claims " + money(cost * wpFrac(wp)) + " in full, in FY " + fyLabel(fy) + "."];
   if (a.treatment === "pool") {
     // derive() rebuilds the pool from the original costs on every load, so taking an asset
@@ -1138,7 +1194,7 @@ function sendToExpenses(assetId){
   if (!confirm(lines.join("\n"))) return;
 
   M.assets = M.assets.filter(r => r.asset_id !== assetId);
-  M.expenses.push(asExpenseRow(a));
+  M.expenses.push(asExpenseRow(a, supplier));
   touch();
 }
 
@@ -1323,8 +1379,7 @@ function renderAssets(){
       ${registerHeader()}
       <tbody>
         <tr class="add">
-          <td><input id="a-desc" placeholder="14&quot; laptop" oninput="previewAssetEntry()">
-              <input id="a-sup" placeholder="supplier" oninput="previewAssetEntry()"></td>
+          <td><input id="a-item-supplier" placeholder="14-inch laptop — Apple" oninput="previewAssetEntry()"></td>
           <td><input id="a-date" type="date" value="${todayISO()}" oninput="previewAssetEntry()"></td>
           <td class="n"><input id="a-cost" class="n" type="number" step="0.01" placeholder="incl. GST" oninput="previewAssetEntry()"></td>
           <td class="n"><input id="a-wp" class="n" type="number" step="1" min="0" max="100" placeholder="0–100" oninput="previewAssetEntry()"></td>
@@ -1338,8 +1393,8 @@ function renderAssets(){
         const imm = a.treatment === "immediate" && fyOf(assetStartDate(a)) === activeYear;
         const pooled = a.treatment === "pool";
         return `<tr>
-          <td><input value="${esc(a.description)}" onchange="setField('assets','${a.asset_id}','description',this.value)">
-            <div class="mono" style="margin-top:4px;color:var(--muted);font-size:11px">${esc(a.supplier || "supplier not recorded")} · ${esc(a.asset_id)}</div></td>
+          <td><input value="${esc(assetIdentity(a))}" onchange="setField('assets','${a.asset_id}','item_supplier',this.value)">
+            <div class="mono" style="margin-top:4px;color:var(--muted);font-size:11px">${esc(a.asset_id)}</div></td>
           <td><input type="date" value="${esc(a.purchase_date)}" onchange="setField('assets','${a.asset_id}','purchase_date',this.value)"></td>
           <td class="n"><input class="n" type="number" step="0.01" value="${num(a.cost)}" onchange="setField('assets','${a.asset_id}','cost',this.value)"></td>
           <td class="n"><input class="n" type="number" step="5" min="0" max="100" value="${workPctFor(a,activeYear)}"
@@ -1382,7 +1437,6 @@ function assetDetail(a){
   return `<tr class="sub"><td colspan="7" style="padding:14px 16px">
     <div class="formrow" style="margin:0 0 10px">
       <div class="fld"><label>Record ID</label><input class="mono" readonly value="${esc(a.asset_id)}"></div>
-      ${f("supplier","Supplier on receipt")}
       <div class="fld"><label>First used or ready for income-producing use</label>
         <input type="date" value="${esc(assetStartDate(a))}" onchange="setField('assets','${a.asset_id}','start_date',this.value)"></div>
     </div>
@@ -1403,7 +1457,7 @@ function assetDetail(a){
           : "Suggested from cost. Review the immediate-deduction conditions or optional pool choice before lodging."}</span>
       </div>
       ${a.treatment==="schedule" ? `<div class="fld"><label>Effective life (years)</label><input class="n" type="number" step="0.1" min="0.1"
-        value="${num(a.effective_life)||suggestLife(a.description)}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)"></div>
+        value="${num(a.effective_life)||suggestLife(assetItemName(a))}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)"></div>
       <div class="fld"><label>Depreciation method</label><select onchange="setField('assets','${a.asset_id}','method',this.value)">
         <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>Prime cost</option>
         <option value="diminishing"${a.method==="diminishing"?" selected":""}>Diminishing value</option></select></div>` : ""}
@@ -1827,9 +1881,10 @@ function previewAssetEntry(){
   if (!claimOut || !purposeOut || !categoryField) return;
   const cost = Number($("#a-cost").value), rawPct = String($("#a-wp").value || "").trim();
   const pctValue = Number(rawPct), treatment = cost > 0 ? treatmentFor(cost) : null;
-  const desc = $("#a-desc").value || "", supplier = $("#a-sup").value || "";
+  const identity = splitAssetIdentity($("#a-item-supplier").value || "");
+  const item = identity.item, supplier = identity.supplier;
   const chosenCategory = categoryField.value;
-  const suggestedCategory = chosenCategory || suggestCategory(supplier, desc, "assets");
+  const suggestedCategory = chosenCategory || suggestCategory(supplier, item, "assets");
   // Cost changes the D5/D6 wording on every category option without changing the person's
   // category selection. This keeps the one combined control truthful while they type.
   categoryField.innerHTML = assetPurposeOptions(chosenCategory, treatment, true);
@@ -1847,7 +1902,7 @@ function previewAssetEntry(){
   let claim = cost * pctValue / 100;
   if (treatment === "pool") claim *= POOL_FIRST_YEAR;
   else if (treatment === "schedule") {
-    const life = suggestLife(desc);
+    const life = suggestLife(item);
     claim = cost * (daysHeldIn(fy, date, null) / 365) * (1 / life) * pctValue / 100;
   }
   claimOut.textContent = money(claim);
@@ -1858,19 +1913,20 @@ function previewAssetEntry(){
 // recorded row, with "→ asset" / "→ expense" — not offered again here, where nothing is
 // in doubt.
 function addAsset(){
-  const desc = $("#a-desc").value.trim();
+  const itemSupplier = $("#a-item-supplier").value.trim();
   const cost = num($("#a-cost").value);
-  if (!desc || !cost) { alert("A description and a cost are needed."); return; }
+  if (!itemSupplier || !cost) { alert("An item / supplier and a cost are needed."); return; }
   const date = $("#a-date").value;
   if (!date) { alert("A purchase date is needed."); return; }
   const deductiblePct = entryPct("#a-wp"); if (deductiblePct === null) return;
-  M.assets.push({ asset_id: allocateAssetId(fyOf(date)), description: desc, supplier: $("#a-sup").value.trim(),
+  const identity = splitAssetIdentity(itemSupplier);
+  M.assets.push({ asset_id: allocateAssetId(fyOf(date)), item_supplier: itemSupplier,
     purchase_date: date, start_date: date, cost, treatment: treatmentFor(cost),
-    effective_life: suggestLife(desc), method: "prime_cost",
+    effective_life: suggestLife(identity.item), method: "prime_cost",
     work_pct: { [fyOf(date)]: deductiblePct },
-    category: $("#a-cat").value || suggestCategory($("#a-sup").value.trim(), desc, "assets"), basis: "" });
-  entryNotice = { view:"assets", text:"Added “" + desc + "”; first claim is in FY " + fyLabel(fyOf(date)) + "." };
-  ["#a-desc","#a-sup","#a-cost","#a-wp","#a-cat"].forEach(s => $(s).value = "");
+    category: $("#a-cat").value || suggestCategory(identity.supplier, identity.item, "assets"), basis: "" });
+  entryNotice = { view:"assets", text:"Added “" + itemSupplier + "”; first claim is in FY " + fyLabel(fyOf(date)) + "." };
+  ["#a-item-supplier","#a-cost","#a-wp","#a-cat"].forEach(s => $(s).value = "");
   touch();
 }
 // The supplier is required, and not only because it heads the table. It is the group key,
@@ -2041,7 +2097,7 @@ function rowKeys(r, kind){
   const sk = sourceKey(r);
   if (sk) keys.push(sk);
   if (kind === "assets")
-    keys.push("h:" + [r.purchase_date, (r.description||"").trim().toLowerCase(), num(r.cost).toFixed(2)].join("|"));
+    keys.push("h:" + [r.purchase_date, assetIdentity(r).trim().toLowerCase(), num(r.cost).toFixed(2)].join("|"));
   else if (kind === "income")
     keys.push("h:" + [r.date, r.type, (r.holding||"").trim().toLowerCase(), num(r.gross_aud||r.amount||r.proceeds).toFixed(2)].join("|"));
   else
@@ -2087,8 +2143,8 @@ function planImport(parsed){
     seenCross[k] = true;
     plan.cross.push({ fy, sup, incoming: src, existing: others, amounts: g.sources });
   };
-  plan.add.expenses.forEach(r => noteCross(fyOf(r.date), normaliseSupplier(r.supplier || r.description), sourceOf(r)));
-  plan.add.assets.forEach(r => noteCross(fyOf(r.purchase_date), normaliseSupplier(r.supplier || r.description), sourceOf(r)));
+  plan.add.expenses.forEach(r => noteCross(fyOf(r.date), normaliseSupplier(r.supplier), sourceOf(r)));
+  plan.add.assets.forEach(r => noteCross(fyOf(r.purchase_date), normaliseSupplier(assetSupplierName(r) || assetIdentity(r)), sourceOf(r)));
 
   for (const y of (incoming.years || []))
     if (!M.years.some(x => x.year === y.year)) plan.years.push(y);
@@ -2225,8 +2281,8 @@ function csv(rows){
 function exportCSV(which){
   const fy = activeYear;
   const sets = {
-    assets: [["asset_id","description","supplier","purchase_date","start_date","cost","treatment","effective_life","method","income_use_pct","disposal_date","disposal_proceeds","keep_until"],
-      ...M.assets.map(a => [a.asset_id,a.description,a.supplier,a.purchase_date,assetStartDate(a),a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.disposal_date,a.disposal_proceeds,derived.keep[a.asset_id]])],
+    assets: [["asset_id","item_supplier","purchase_date","start_date","cost","treatment","effective_life","method","income_use_pct","disposal_date","disposal_proceeds","keep_until"],
+      ...M.assets.map(a => [a.asset_id,assetIdentity(a),a.purchase_date,assetStartDate(a),a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.disposal_date,a.disposal_proceeds,derived.keep[a.asset_id]])],
     depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
       ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
     expenses: [["date","supplier","amount","work_pct","claimed","label","basis"],

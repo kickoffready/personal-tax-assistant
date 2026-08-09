@@ -174,9 +174,8 @@
         <thead><tr><th>Column</th><th>Example</th><th>Why it earns its place</th></tr></thead>
         <tbody>
           <tr><td class="k">asset_id</td><td class="k">A-2026-014</td><td>Immutable key. Written on the receipt filename and every ledger row.</td></tr>
-          <tr><td class="k">description</td><td>14" laptop, work</td><td>Plain language, so you can find it in five years.</td></tr>
+          <tr><td class="k">item_supplier</td><td>14" laptop — Apple</td><td>One identity field in the ledger. The final exact <code> — </code> separates the item used for tax hints from the supplier used for receipt and import checks.</td></tr>
           <tr><td class="k">serial</td><td class="k">C02X…</td><td>Ties the row to the physical object. Settles "which laptop was that?".</td></tr>
-          <tr><td class="k">supplier</td><td>—</td><td>Required on written evidence.</td></tr>
           <tr><td class="k">purchase_date</td><td class="k">2026-02-11</td><td>Starts the depreciation clock and the days-held apportionment.</td></tr>
           <tr><td class="k">cost_incl</td><td class="k">1890.00</td><td>Full cost, before any work-use split. The $300 and $1,000 tests apply here.</td></tr>
           <tr><td class="k">evidence</td><td class="k">evidence/2026/…</td><td>Relative path to the invoice file.</td></tr>
@@ -220,8 +219,7 @@
         <tbody>
           <tr><td class="k">date</td><td>Date incurred, not date reconciled.</td></tr>
           <tr><td class="k">year</td><td>Derived from date. Lets you filter a year without a separate tab.</td></tr>
-          <tr><td class="k">description</td><td>What it was, as the supplier described it.</td></tr>
-          <tr><td class="k">supplier</td><td>Required element of written evidence.</td></tr>
+          <tr><td class="k">supplier</td><td>Who the service or charge was bought from; the single display and grouping identity.</td></tr>
           <tr><td class="k">amount</td><td>Full amount paid.</td></tr>
           <tr><td class="k">work_pct</td><td>Apportionment. <code>1.0</code> where wholly work-related.</td></tr>
           <tr><td class="k">claimed</td><td><code>amount × work_pct</code>.</td></tr>

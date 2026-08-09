@@ -70,12 +70,12 @@ function boot(store = {}, refuseStorage = false, memoDom = false, acknowledged =
     // Dialogs are recorded so a test can read what the page said, and answered from the
     // context so a test can decline one. CONFIRM_REPLY defaults to true — the behaviour
     // every existing test was written against.
-    ALERTS: [], CONFIRMED: [], CONFIRM_REPLY: true,
+    ALERTS: [], CONFIRMED: [], PROMPTED: [], CONFIRM_REPLY: true,
     alert: m => { ctx.ALERTS.push(String(m)); },
     confirm: m => { ctx.CONFIRMED.push(String(m)); return ctx.CONFIRM_REPLY; },
     // Set PROMPT_REPLY from inside a test to answer the next prompt(); reading it off
     // the context is what lets an engine test drive a dialog the page opens.
-    PROMPT_REPLY: "", prompt: () => ctx.PROMPT_REPLY,
+    PROMPT_REPLY: "", prompt: m => { ctx.PROMPTED.push(String(m)); return ctx.PROMPT_REPLY; },
     URL: { createObjectURL: () => "", revokeObjectURL(){} },
     Blob: function(){}, FileReader: function(){}
   };
@@ -147,7 +147,7 @@ t('an exact year still wins', workPctFor({work_pct:{'2024-25':50,'2026-27':80}},
 console.log('\\n— schema 1 files still load');
 let leg = migrate({schema:1, expenses:[{id:'e',amount:100,work_pct:0.7}],
   assets:[{asset_id:'A',cost:2000,work_pct:{'2024-25':0.8,'2025-26':0.5}},{asset_id:'B',cost:500,work_pct:0.25}]});
-t('schema bumped to 4', leg.schema===4, leg.schema, 4);
+t('schema bumped to 5', leg.schema===5, leg.schema, 5);
 t('expense 0.7 becomes 70', leg.expenses[0].work_pct===70, leg.expenses[0].work_pct, 70);
 t('per-year 0.8 becomes 80', leg.assets[0].work_pct['2024-25']===80, leg.assets[0].work_pct['2024-25'], 80);
 t('a scalar 0.25 becomes 25', leg.assets[1].work_pct===25, leg.assets[1].work_pct, 25);
@@ -172,23 +172,37 @@ t('the year settings survive', stripped.years[0].marginal===0.32 && stripped.yea
   stripped.years[0].marginal+'/'+stripped.years[0].wfh_hours, '0.32/800');
 
 // An expense is identified by who you bought from; its description said the same thing
-// twice. An asset's description is load-bearing — suggestLife() reads it — so the strip
-// has to know the difference between the two collections.
-let s4 = migrate({schema:3,
+// twice. Assets use one Item / supplier identity, while helpers split its two meanings for
+// effective-life suggestions and supplier matching.
+let s5 = migrate({schema:3,
   expenses:[{id:'e1',date:'2025-09-01',description:'Cloud Plus storage (200GB)',
-    supplier:'Apple',amount:53.88,work_pct:50,label:'D5',basis:'review — needs a rate'}],
+    supplier:'Apple',amount:53.88,work_pct:50,label:'D5',basis:'review — needs a rate'},
+    {id:'e2',date:'2026-05-06',description:'ChatGPT',amount:30,work_pct:100,label:'D5'}],
   assets:[{asset_id:'A-1',description:'MacBook Pro',supplier:'Apple',cost:2400,
     work_pct:{'2025-26':70}}]});
-t('schema bumped to 4 from 3', s4.schema===4, s4.schema, 4);
-t('the expense description is dropped', !('description' in s4.expenses[0]),
-  Object.keys(s4.expenses[0]).join(','), 'no description');
-t('the asset description is not', s4.assets[0].description==='MacBook Pro',
-  s4.assets[0].description, 'MacBook Pro');
+t('schema bumped to 5 from 3', s5.schema===5, s5.schema, 5);
+t('expense descriptions are dropped', s5.expenses.every(e => !('description' in e)),
+  s5.expenses.map(e => Object.keys(e).join(',')).join(' / '), 'no descriptions');
+t('a legacy description preserves identity when supplier is blank',
+  s5.expenses[1].supplier==='ChatGPT', s5.expenses[1].supplier, 'ChatGPT');
+t('an existing supplier wins over the legacy description',
+  s5.expenses[0].supplier==='Apple', s5.expenses[0].supplier, 'Apple');
+t('the asset identity joins item and supplier', s5.assets[0].item_supplier==='MacBook Pro — Apple',
+  s5.assets[0].item_supplier, 'MacBook Pro — Apple');
+t('the two legacy asset fields are dropped',
+  !('description' in s5.assets[0]) && !('supplier' in s5.assets[0]),
+  Object.keys(s5.assets[0]).join(','), 'only item_supplier');
+t('the final exact separator is the supplier boundary',
+  splitAssetIdentity('Monitor — 27-inch — JB Hi-Fi').item === 'Monitor — 27-inch' &&
+    splitAssetIdentity('Monitor — 27-inch — JB Hi-Fi').supplier === 'JB Hi-Fi',
+  JSON.stringify(splitAssetIdentity('Monitor — 27-inch — JB Hi-Fi')), 'final separator');
+t('a repeated supplier name becomes an explicit item review',
+  joinAssetIdentity('Dell','Dell') === 'Review item — Dell', joinAssetIdentity('Dell','Dell'), 'Review item — Dell');
 t('the expense keeps what identifies it',
-  s4.expenses[0].supplier==='Apple' && s4.expenses[0].amount===53.88 && s4.expenses[0].work_pct===50,
-  [s4.expenses[0].supplier,s4.expenses[0].amount,s4.expenses[0].work_pct].join('/'), 'Apple/53.88/50');
-t('and the review note it arrived with', s4.expenses[0].basis==='review — needs a rate',
-  s4.expenses[0].basis, 'review — needs a rate');
+  s5.expenses[0].supplier==='Apple' && s5.expenses[0].amount===53.88 && s5.expenses[0].work_pct===50,
+  [s5.expenses[0].supplier,s5.expenses[0].amount,s5.expenses[0].work_pct].join('/'), 'Apple/53.88/50');
+t('and the review note it arrived with', s5.expenses[0].basis==='review — needs a rate',
+  s5.expenses[0].basis, 'review — needs a rate');
 
 console.log('\\n— one service, one percentage');
 setModel({years:[{year:'2025-26'}], expenses:[
@@ -1321,7 +1335,7 @@ const headRow = html => (/<thead>[\s\S]*?<\/thead>/.exec(html) || [""])[0];
 
 for (const [view, render, fields] of [
   ["#v-expenses", "renderExpenses", ["e-sup", "e-date", "e-repeat", "e-amt", "e-wp", "e-purpose"]],
-  ["#v-assets",   "renderAssets",   ["a-desc", "a-sup", "a-date", "a-cost", "a-wp", "a-cat"]],
+  ["#v-assets",   "renderAssets",   ["a-item-supplier", "a-date", "a-cost", "a-wp", "a-cat"]],
   ["#v-income",   "renderIncome",   ["i-date", "i-type", "i-hold", "i-amt"]]
 ]) {
   vm.runInContext(render + "();", ui);
@@ -1362,6 +1376,9 @@ t('the asset entry exposes its own claim purpose in the shared selector style',
   assetAdd.includes('id="a-cat"') && assetAdd.includes('class="claim-purpose"') &&
     assetAdd.includes('Computers</option>'),
   assetAdd.includes('id="a-cat"') ? 'asset picker present' : 'missing', 'asset category picker');
+t('asset categories are not prefixed with an instruction before cost is entered',
+  !assetAdd.includes('Enter cost') && assetAdd.includes('>Computers</option>'),
+  assetAdd.includes('Enter cost') ? 'instruction repeated in options' : 'plain categories', 'plain categories');
 t('the asset entry never offers an expense category',
   !assetAdd.includes('>Information services</option>'),
   assetAdd.includes('>Information services</option>') ? 'expense category leaked' : 'separate', 'separate taxonomy');
@@ -1370,7 +1387,7 @@ console.log("\n— Assets and Expenses implementation consistency checker");
 const consistentUI = boot({}, false, true);
 vm.runInContext(code, consistentUI);
 vm.runInContext("M = Object.assign(emptyModel(), {years:[{year:'2025-26'}],"
-  + "assets:[{asset_id:'A-C',description:'dock',supplier:'Dell',category:'Peripherals',"
+  + "assets:[{asset_id:'A-C',item_supplier:'dock — Dell',category:'Peripherals',"
   + "purchase_date:'2025-08-01',cost:500,treatment:'pool',work_pct:{'2025-26':100}}],"
   + "expenses:[{id:'E-C',date:'2025-08-01',supplier:'Optus',amount:50,work_pct:70,"
   + "category:'Information services',label:'D5'}]});"
@@ -1392,6 +1409,16 @@ t('the Assets main register no longer stacks category and treatment displays',
 t('the shared display contract does not merge the two tax vocabularies',
   !consistentAssets.includes('Phone, internet and data') && !consistentExpenses.includes('D6 · Peripherals'),
   'separate vocabularies', 'separate vocabularies');
+t('Assets has one identity input, matching the Expenses one-field pattern',
+  consistentAssets.includes('id="a-item-supplier"') &&
+    !consistentAssets.includes('id="a-desc"') && !consistentAssets.includes('id="a-sup"'),
+  'one Item / supplier input', 'one identity input');
+t('asset Details does not re-split the supplier into another editable field',
+  !consistentAssets.includes('Supplier on receipt'),
+  consistentAssets.includes('Supplier on receipt') ? 'duplicate supplier field' : 'joined only', 'joined only');
+t('asset rows keep correction and delete controls directly in the table',
+  consistentAssets.includes("sendToExpenses('A-C')") && consistentAssets.includes("removeRow('assets','A-C')"),
+  'table controls present', 'table controls present');
 
 // The supplier is what the whole view is built on — the group key, the lodgment
 // breakdown line, half the import identity, and the only input left for guessing a label
@@ -1475,7 +1502,8 @@ vm.runInContext(DOCK + ` sendToAssets("e-1"); A = M.assets[0];`, one);
 const A = k => vm.runInContext("A." + k, one);
 t('the asset keeps the purchase date', A("purchase_date") === "2025-08-01", A("purchase_date"), '2025-08-01');
 t('the cost is the expense amount', A("cost") === 310.32, A("cost"), 310.32);
-t('the supplier survives', A("supplier") === "Dell", A("supplier"), 'Dell');
+t('the supplier survives in the joined identity', A("item_supplier") === "Review item — Dell",
+  A("item_supplier"), 'Review item — Dell');
 t('the issuer survives', A("issuer") === "dell", A("issuer"), 'dell');
 t('the converter identity survives',
   A("source") === "gmail" && A("source_ref") === "msg-abc",
@@ -1548,6 +1576,37 @@ t('and re-derives the category for expenses',
   vm.runInContext('knownCategories("expenses").indexOf(E.category) !== -1 || E.category === ""', trip),
   E("category"), 'an expense category');
 t('the asset is gone', vm.runInContext("M.assets.length", trip) === 0, vm.runInContext("M.assets.length", trip), 0);
+
+// An item-only asset has no safe Expenses supplier. Ask at the boundary, and leave the
+// asset untouched when the person cancels instead of inventing or dropping that identity.
+const noSupplier = mv();
+vm.runInContext(`
+  M.assets.push({asset_id:"A-2026-001",item_supplier:"Standing desk",purchase_date:"2025-08-01",
+    cost:450,treatment:"pool",work_pct:{"2025-26":100}});
+  activeYear="2025-26";
+  sendToExpenses("A-2026-001");
+`, noSupplier);
+t('an item-only asset asks for the Expense supplier',
+  noSupplier.PROMPTED.some(x => x.includes('Supplier for “Standing desk”')) &&
+    vm.runInContext("M.assets.length", noSupplier) === 1,
+  noSupplier.PROMPTED.join(' | '), 'supplier prompt');
+t('cancelling the supplier prompt does not open the move confirmation',
+  noSupplier.CONFIRMED.length === 0, noSupplier.CONFIRMED.length, 0);
+
+const supplied = mv();
+supplied.PROMPT_REPLY = "Officeworks";
+vm.runInContext(`
+  M.assets.push({asset_id:"A-2026-001",item_supplier:"Standing desk",purchase_date:"2025-08-01",
+    cost:450,treatment:"pool",work_pct:{"2025-26":100}});
+  activeYear="2025-26";
+  sendToExpenses("A-2026-001");
+`, supplied);
+t('the supplied name becomes the Expense supplier',
+  vm.runInContext("M.expenses[0].supplier", supplied) === "Officeworks",
+  vm.runInContext("M.expenses[0].supplier", supplied), 'Officeworks');
+t('answering the supplier prompt completes one confirmed move',
+  vm.runInContext("M.assets.length+'/'+M.expenses.length", supplied) === '0/1' && supplied.CONFIRMED.length === 1,
+  vm.runInContext("M.assets.length+'/'+M.expenses.length", supplied), '0/1');
 
 // ---- refusals ----
 // A disposal computes a balancing adjustment from fields an expense row cannot hold.
@@ -1838,16 +1897,16 @@ const zo = entry(Object.assign({}, EXP_FIELDS, { "#e-wp":"101" }));
 vm.runInContext(`addExpense();`, zo);
 t('an out-of-range percentage is rejected too', vm.runInContext("M.expenses.length", zo) === 0,
   vm.runInContext("M.expenses.length", zo), 0);
-const za = entry({ "#a-desc":"dock", "#a-sup":"Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"0", "#a-cat":"" });
+const za = entry({ "#a-item-supplier":"dock — Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"0", "#a-cat":"" });
 vm.runInContext(`addAsset();`, za);
 t('the same holds on the asset entry row',
   vm.runInContext('workPctFor(M.assets[0],"2025-26")', za) === 0,
   vm.runInContext('workPctFor(M.assets[0],"2025-26")', za), 0);
-const zab = entry({ "#a-desc":"dock", "#a-sup":"Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"" });
+const zab = entry({ "#a-item-supplier":"dock — Dell", "#a-date":"2025-08-01", "#a-cost":"400", "#a-wp":"" });
 vm.runInContext(`addAsset();`, zab);
 t('a blank asset percentage is rejected too', vm.runInContext("M.assets.length", zab) === 0,
   vm.runInContext("M.assets.length", zab), 0);
-const categorizedAsset = entry({ "#a-desc":"laptop", "#a-sup":"Dell", "#a-date":"2025-08-01",
+const categorizedAsset = entry({ "#a-item-supplier":"laptop — Dell", "#a-date":"2025-08-01",
   "#a-cost":"1800", "#a-wp":"80", "#a-cat":"Furniture" });
 vm.runInContext(`previewAssetEntry();`, categorizedAsset);
 t('the asset entry identifies a deliberately selected category',
@@ -1919,7 +1978,7 @@ t('the confirmation names where the row went',
   vm.runInContext("entryNotice.text", routed).includes('FY 2026–27'),
   vm.runInContext("entryNotice.text", routed), 'mentions FY 2026–27');
 
-const routedAsset = entry({ "#a-desc":"laptop", "#a-sup":"Dell", "#a-date":"2026-08-09",
+const routedAsset = entry({ "#a-item-supplier":"laptop — Dell", "#a-date":"2026-08-09",
   "#a-cost":"1800", "#a-wp":"80" });
 vm.runInContext(`M.years.push({year:"2025-26"}); addAsset();`, routedAsset);
 t('an asset purchase date owns its first claim year',

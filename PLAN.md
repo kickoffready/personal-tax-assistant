@@ -38,14 +38,14 @@ ledger.json  (the record — lives in cloud storage alongside the workbook)
 ledger-FY2025-26-{assets,expenses,income,lodgment}.csv  (archive)
 ```
 
-### Data model (`schema: 1`)
+### Data model (`schema: 5`)
 
 Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
 
 | Collection | Persisted | Notes |
 |---|---|---|
 | `years[]` | yes | `year`, `marginal_plus_levy`, `estimated`, `assessed`, `variance`, `noa_date`, `cf_capital_loss` |
-| `assets[]` | yes | `asset_id`, `description`, `supplier`, `purchase_date`, `start_date`, `cost_incl`, `treatment`, `effective_life`, `method`, `work_pct{}`, `disposal_date`, `disposal_proceeds` |
+| `assets[]` | yes | `asset_id`, `item_supplier`, `purchase_date`, `start_date`, `cost`, `treatment`, `effective_life`, `method`, `work_pct{}`, `category`, `disposal_date`, `disposal_proceeds` |
 | `expenses[]` | yes | `date`, `supplier`, `amount`, `work_pct`, `label`, `category`, `basis`, `evidence` |
 | `income[]` | yes | `date`, `type`, `holding`, `gross_foreign`, `currency`, `fx_rate`, `tax_withheld_aud`, `franked`, `unfranked`, `credit` |
 | `depreciation[]` | **no — derived** | one row per asset per year held |
@@ -69,7 +69,7 @@ The boundary: **arithmetic and hard rules are computed; judgement stays with the
 
 | Automatic — rule or arithmetic | Suggested — visible and editable | Manual — always the user's |
 |---|---|---|
-| Decline in value, prime cost or DV, part-year by days held | Treatment from cost; effective life from description keywords | Whether the $300 conditions are met and whether to use the pool |
+| Decline in value, prime cost or DV, part-year by days held | Treatment from cost; effective life from the item portion of `item_supplier` | Whether the $300 conditions are met and whether to use the pool |
 | Opening/closing balances and roll-forward | Expense Tax purpose from supplier, then remembered per supplier | Deductible % (required explicitly for a new manual row) |
 | | | Hours worked from home |
 | Pool: 18.75% then 37.5% | | Whether an expense relates to earning income at all |
@@ -89,9 +89,9 @@ Three consequences worth building for:
 
 ### Claim-first asset entry
 
-The default Assets view contains only the everyday inputs and payoff: item, purchase date,
-cost, Deductible %, how it is claimed and the current-year deduction. Supplier receipt detail,
-the separate/custom category editor, first-use date, basis, calculation settings, disposal and
+The default Assets view contains only the everyday inputs and payoff: `Item — Supplier`,
+purchase date, cost, Deductible %, how it is claimed and the current-year deduction. The
+separate/custom category editor, first-use date, basis, calculation settings, disposal and
 retention remain in the expandable asset record because they support lodgment or substantiation, but they do not compete with the claim
 inputs. A field that supports neither is not demoted, it is removed: `serial`, `evidence`,
 `taxable_income` and `payg_withheld` were stored and then read by nothing, and schema 3 drops
@@ -121,9 +121,13 @@ schedule rather than being repeated across the main register.
 
 An expense is identified by **who you bought from**. "Acme Cloud Plus" then "Cloud Plus storage
 (200GB)" is the same fact written twice, so schema 4 drops an expense's `description`
-entirely — the supplier leads the table and is required on entry. An **asset** keeps its
-description, because `suggestLife()` reads it to guess an effective life; the two
-collections differ here on purpose.
+entirely — the supplier leads the table and is required on entry. For a legacy expense with
+no supplier, migration first preserves its description as the supplier rather than discarding
+the row's only identity. Schema 5 joins an asset's
+legacy `description` and `supplier` into one `item_supplier` value displayed as
+`Item — Supplier`. The final exact separator preserves the two meanings without making a
+person type or reconcile two identity fields: the item side drives effective-life and asset
+category hints; the supplier side drives source overlap and conversion to Expenses.
 
 Supplier is not merely a label: it is the group key, the lodgment breakdown line, half the
 import identity in `rowKeys()`, and the only input left for guessing a label and a
@@ -174,7 +178,8 @@ Computers, Peripherals and Furniture appear only in Assets. Expense purposes suc
 Information services or Donations appear only in Expenses. Assets continue to store category
 and treatment separately because both drive calculations; the register combines them only
 for a consistent human-readable display. The implementation checker renders both tabs and
-fails if their headers, widths, How claimed selector contract or everyday actions diverge.
+fails if their headers, widths, one-field identity, How claimed selector contract or everyday
+actions diverge.
 
 Return sections remain visible beside the plain language. Asset treatments show D5 or D6,
 and every Expense purpose shows its applicable D-code. The interface may explain a code but
