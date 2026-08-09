@@ -854,6 +854,45 @@ D=derive(); const w=D.warnings.map(x=>x.title).join(' | ');
  [/omits the Medicare levy/,'bare marginal rate flagged']]
  .forEach(([re,name])=>t(name, re.test(w), '', 'flag'));
 
+// A check that says "A-2027-001 is not used mainly to produce assessable income" names a record
+// number nobody recognises. The register leads with the identity you typed, so a check has to
+// name the asset the same way round and keep the ID only as the locator for finding the row.
+// Zero hours claims nothing under the rate, so no running cost can be sitting "on top of" it.
+// The check used to read only wfh_method, which every year defaults to "fixed" — so setting the
+// hours to 0 to opt out left the warning firing against a rate the return never used.
+console.log('\\n— the 70c check follows the deduction, not just the method');
+const wfhRows = {years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:0,marginal:0.37}],
+  expenses:[{id:'x1',date:'2025-09-01',supplier:'Telstra',category:'Information services',amount:900,work_pct:70,label:'D5'},
+            {id:'x2',date:'2025-10-01',supplier:'AGL',category:'Energy',amount:400,work_pct:70,label:'D5'}]};
+const d5lines = () => (D.lodgment['2025-26'].deductions.D5?.lines||[]).map(l=>l.name).join('|');
+const titles  = () => D.warnings.map(x=>x.title).join('|');
+setModel(wfhRows); D=derive();
+t('zero hours claims no fixed-rate deduction', !/fixed rate/.test(d5lines()), d5lines()||'none', 'no fixed-rate line');
+t('so the double-dip check stays quiet', !/covered by the 70c/.test(titles()), titles()||'none', 'no 70c warning');
+
+setModel(JSON.parse(JSON.stringify(wfhRows))); M.years[0].wfh_hours = 100; D=derive();
+t('hours put the fixed-rate line back in D5', /fixed rate, 100 hrs/.test(d5lines()), d5lines(), 'a fixed-rate line');
+t('and the warning returns with it', /covered by the 70c/.test(titles()), titles(), 'the 70c warning');
+t('and it counts both covered rows', /2 expenses already covered/.test(titles()), titles(), '2 expenses');
+
+setModel(JSON.parse(JSON.stringify(wfhRows))); M.years[0].wfh_method='actual'; M.years[0].wfh_hours=100; D=derive();
+t('actual cost never raises the fixed-rate warning', !/covered by the 70c/.test(titles()), titles()||'none', 'no 70c warning');
+
+console.log('\\n— a check names the asset, not just its record ID');
+setModel({years:[{year:'2026-27'}],assets:[
+  {asset_id:'A-2027-001',item_supplier:'Dell UltraSharp U2723QE — Officeworks',
+   purchase_date:'2026-08-01',cost:280,treatment:'immediate',work_pct:{'2026-27':40}},
+  {asset_id:'A-2027-004',purchase_date:'2026-09-06',cost:640,treatment:'schedule',
+   effective_life:5,method:'prime_cost',work_pct:{'2026-27':90}}]});
+D=derive(); const named=D.warnings.map(x=>x.title).join(' | ');
+t('the check leads with the item you typed', /Dell UltraSharp U2723QE/.test(named), named, 'the item name');
+t('and the supplier it came from', /Officeworks/.test(named), named, 'Officeworks');
+t('the record ID is kept as the locator', /\\(A-2027-001\\)/.test(named), named, '(A-2027-001)');
+t('the ID never stands on its own',
+  !/(^|[|] )A-2027-001 /.test(named), named, 'never a bare leading ID');
+t('an unnamed asset still says which row to open',
+  assetLabel(M.assets[1])==='Review item (A-2027-004)', assetLabel(M.assets[1]), 'Review item (A-2027-004)');
+
 console.log('\\n— asset treatment is an editable suggestion');
 setModel({years:[{year:'2025-26'}],assets:[
   {asset_id:'A-I',description:'keyboard',purchase_date:'2025-08-01',cost:200,treatment:'immediate',work_pct:{'2025-26':100}},

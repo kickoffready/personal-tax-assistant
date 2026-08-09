@@ -116,6 +116,11 @@ function runHay(e){ return (e.category || "") + " " + (e.supplier || ""); }
 const WFH_COVERED = /information services|energy|electric|gas|internet|broadband|phone|mobile|nbn|telstra|optus|vodafone|belong|amaysim|agl|origin|stationery|printer ink|officeworks/i;
 const NOT_RUNNING = /water|rates|council/i;
 const WFH_FIXED_RATE = 0.70;
+// The fixed rate is only in use when it actually produces a deduction. Every year starts at
+// method "fixed" with 0 hours (defaultYearRec), and 0 hours claims nothing — so there is nothing
+// for a running cost to be claimed "on top of". The deduction and the double-dip check must read
+// this the same way, or the check fires against a rate the return never used.
+function claimsFixedRate(y){ return !!y && y.wfh_method === "fixed" && num(y.wfh_hours) > 0; }
 
 // Low-value pool. 18.75% in the year of allocation regardless of purchase date,
 // 37.5% diminishing thereafter. Opening a pool is one-way: every later low-cost
@@ -174,6 +179,13 @@ function assetIdentity(a){
 }
 function assetItemName(a){ return splitAssetIdentity(assetIdentity(a)).item; }
 function assetSupplierName(a){ return splitAssetIdentity(assetIdentity(a)).supplier; }
+// A check has to name the thing you would recognise. The register leads with the identity you
+// typed and keeps the record ID underneath it as a locator, so anything that talks about an
+// asset says it the same way round — "A-2027-001" alone tells you nothing about which row to open.
+function assetLabel(a){
+  const id = String(a && a.asset_id || "").trim();
+  return assetIdentity(a) + (id ? " (" + id + ")" : "");
+}
 
 function emptyModel() {
   return { schema:5, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
@@ -745,7 +757,7 @@ function buildLodgment(fy){
   }
   // working from home
   const y = M.years.find(x => x.year === fy);
-  if (y && y.wfh_method === "fixed" && num(y.wfh_hours) > 0) {
+  if (claimsFixedRate(y)) {
     add(out.deductions, "D5",
       "working from home (fixed rate, " + num(y.wfh_hours).toLocaleString("en-AU") + " hrs)",
       num(y.wfh_hours) * WFH_FIXED_RATE);
@@ -885,19 +897,19 @@ function runChecks(){
 
   for (const a of M.assets) {
     if (a.start_date && a.purchase_date && a.start_date < a.purchase_date)
-      push("high", a.asset_id + " first-use date is before its purchase date",
+      push("high", assetLabel(a) + " first-use date is before its purchase date",
         "Correct the dates in Details. Decline in value cannot start before you hold the asset.");
     if (a.treatment === "immediate" && num(a.cost) > IMMEDIATE_THRESHOLD)
-      push("high", a.asset_id + " expensed immediately at " + money(num(a.cost)),
+      push("high", assetLabel(a) + " expensed immediately at " + money(num(a.cost)),
         "The $300 test applies to the item's cost, not the work-use share. Anything above it must be depreciated or pooled.");
     if (a.treatment === "immediate" && workPctFor(a, fyOf(assetStartDate(a))) <= 50)
-      push("high", a.asset_id + " is not used mainly to produce assessable income",
+      push("high", assetLabel(a) + " is not used mainly to produce assessable income",
         "The immediate deduction requires the asset to be used mainly for that purpose. Review the percentage and claim treatment.");
     if (a.treatment === "pool" && num(a.cost) >= POOL_CEILING)
-      push("high", a.asset_id + " pooled at " + money(num(a.cost)),
+      push("high", assetLabel(a) + " pooled at " + money(num(a.cost)),
         "Only assets costing under $1,000 are low-cost assets. This one needs an individual schedule.");
     if (a.work_pct && typeof a.work_pct === "object" && Object.keys(a.work_pct).length > 1 && !a.basis)
-      push("med", a.asset_id + " work-use % changes between years with no basis recorded",
+      push("med", assetLabel(a) + " work-use % changes between years with no basis recorded",
         "A percentage that moves needs a note explaining why, kept at the time.");
   }
 
@@ -910,12 +922,12 @@ function runChecks(){
       fyOf(assetStartDate(a)) >= first);
     if (escapees.length)
       push("high", escapees.length + " low-cost asset" + (escapees.length>1?"s are":" is") + " scheduled individually after a pool was opened",
-        "Once you allocate anything to a low-value pool, every later asset under $1,000 must be pooled too. The choice does not reverse: " + escapees.map(a=>a.asset_id).join(", ") + ".");
+        "Once you allocate anything to a low-value pool, every later asset under $1,000 must be pooled too. The choice does not reverse: " + escapees.map(assetLabel).join("; ") + ".");
   }
 
   // fixed rate double-dip
   for (const y of M.years) {
-    if (y.wfh_method !== "fixed") continue;
+    if (!claimsFixedRate(y)) continue;
     const covered = M.expenses.filter(e => fyOf(e.date) === y.year && WFH_COVERED.test(runHay(e)));
     if (covered.length)
       push("high", fyLabel(y.year) + ": " + covered.length + " expense" + (covered.length>1?"s":"") + " already covered by the 70c fixed rate",
