@@ -254,6 +254,7 @@ let yearLocked = false;
 let autoLockedFor = null;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
+let openIncome = null;  // income row id whose AMMA breakdown is expanded
 let openGroups = {};    // supplier -> true when an expense group is expanded
 let entryNotice = null; // {view,text}; transient confirmation, never part of the ledger
 // {at, from, summary, added:{expenses,income,assets,years}} of the most recent import.
@@ -728,16 +729,37 @@ function workPctSource(a, fy){
   return "not set — assuming 100%";
 }
 
+// An AMIT cost base adjustment accumulates against the holding, not the year. An excess
+// reduces the cost base you will one day subtract from your proceeds; a shortfall increases it.
+// Nothing is assessable when it is recorded, which is exactly how it gets lost — it surfaces
+// only at disposal, years later, in a number nobody remembers adjusting. Signed: positive
+// increases the cost base.
+function amitAdjustment(holding, onOrBefore){
+  if (!holding) return 0;
+  return M.income
+    .filter(i => i.type === "distribution" && i.holding === holding
+              && (!onOrBefore || String(i.date || "") <= onOrBefore))
+    .reduce((s,i) => s + num(i.amit_cost_base_net), 0);
+}
+
 /* ---- capital gains: losses first, discount last ---- */
 function computeCGT(fy){
   const rows = M.income.filter(i => i.type === "disposal" && fyOf(i.date) === fy);
   let discountable = 0, other = 0, losses = 0;
   for (const r of rows) {
-    const gain = num(r.proceeds) - num(r.cost_base);
+    const gain = num(r.proceeds) - (num(r.cost_base) + amitAdjustment(r.holding, r.date));
     if (gain < 0) { losses += -gain; continue; }
     const acq = d(r.acquired), dis = d(r.date);
     const held12 = acq && dis && (dis - acq) > 365*86400000;
     if (held12) discountable += gain; else other += gain;
+  }
+  // A trust's capital gain is added to your own before any of it is worked out: your losses
+  // reduce it, and the discount comes last. Adding a pre-discounted figure straight to I18
+  // would deny the losses their first bite and halve what they had already reduced.
+  for (const i of M.income) {
+    if (i.type !== "distribution" || fyOf(i.date) !== fy) continue;
+    discountable += num(i.cg_discount);
+    other += num(i.cg_other);
   }
   // apply current-year losses against non-discountable first
   let rem = losses;
@@ -827,7 +849,18 @@ function buildLodgment(fy){
       if (num(i.unfranked)) add(out.income, "I11", holding + " (unfranked)", num(i.unfranked));
       if (num(i.credit)) add(out.income, "I11", holding + " (franking credit)", num(i.credit));
     }
-    else if (i.type === "distribution") add(out.income, "I13", holding, num(i.gross_aud || i.amount));
+    else if (i.type === "distribution") {
+      // A trust distribution is one payment made of parts that belong on different lines. The
+      // AMMA statement is what splits it; a single figure entered from a bank feed cannot.
+      // Capital gains are deliberately absent here — they go through computeCGT() so losses
+      // and the discount apply in the order the law requires.
+      if (ammaComponents(i)) {
+        if (num(i.franked))     add(out.income, "I13", holding + " (franked)", num(i.franked));
+        if (num(i.unfranked))   add(out.income, "I13", holding + " (unfranked/other)", num(i.unfranked));
+        if (num(i.credit))      add(out.income, "I13", holding + " (franking credit)", num(i.credit));
+        if (num(i.foreign_aud)) add(out.income, "I20", holding + " (foreign)", num(i.foreign_aud));
+      } else add(out.income, "I13", holding, num(i.gross_aud || i.amount));
+    }
     else if (i.type === "foreign") add(out.income, "I20", holding + " (gross)", grossAud(i));
     else if (i.type === "staking" || i.type === "airdrop") add(out.income, "I24", holding + " (" + i.type + ")", num(i.gross_aud || i.amount));
   }
@@ -843,16 +876,33 @@ function buildLodgment(fy){
 
   // offsets — not deductions, and the two behave differently
   out.offsets = [];
-  const fc = M.income.filter(i => fyOf(i.date) === fy && i.type === "dividend")
+  // Both offsets reach the return through more than one type. A franking credit arrives from a
+  // company as a dividend and from a trust inside a distribution; foreign tax is withheld on a
+  // foreign dividend and passed through by an ETF the same way. Filtering on one type each
+  // dropped the trust half of both, which is most of what an ETF investor is owed.
+  const fc = M.income.filter(i => fyOf(i.date) === fy && (i.type === "dividend" || i.type === "distribution"))
     .reduce((s,i) => s + num(i.credit), 0);
   if (fc > 0.005) out.offsets.push({ name:"Franking credits", amount:fc, refundable:true,
     note:"Refundable — can be paid to you in cash even if it takes your tax below zero." });
-  const fito = M.income.filter(i => fyOf(i.date) === fy && i.type === "foreign")
+  const fito = M.income.filter(i => fyOf(i.date) === fy && (i.type === "foreign" || i.type === "distribution"))
     .reduce((s,i) => s + num(i.tax_withheld_aud), 0);
   if (fito > 0.005) out.offsets.push({ name:"Foreign income tax offset", amount:fito, refundable:false,
     note:"Non-refundable — reduces tax payable to zero, no further. Claim it, or the withholding is simply lost." });
 
   return out;
+}
+// Whether a distribution has been broken out from its AMMA statement. The single-figure form
+// stays valid — files written before this existed still lodge the same numbers — so the two
+// forms have to be told apart in one named place rather than at each site that reads them.
+const AMMA_FIELDS = ["franked","unfranked","credit","foreign_aud","tax_withheld_aud",
+                     "cg_discount","cg_other","amit_cost_base_net"];
+function ammaComponents(i){ return AMMA_FIELDS.some(k => num(i[k]) !== 0); }
+// What a distribution contributes to income this year. Capital gains are excluded: they are
+// assessable through the CGT calculation, not as a second income line.
+function distributionIncome(i){
+  return ammaComponents(i)
+    ? num(i.franked) + num(i.unfranked) + num(i.credit) + num(i.foreign_aud)
+    : num(i.gross_aud || i.amount);
 }
 function grossAud(i){
   if (num(i.gross_aud)) return num(i.gross_aud);
@@ -981,10 +1031,34 @@ function runChecks(){
     push("high", "Exchange rate column contains values on both sides of 1.0",
       "Two reciprocal conventions are mixed. Any row using the wrong one is out by roughly the square of the rate.");
 
+  // A distribution entered as one figure still lodges, so nothing else would ever mention it —
+  // and what it silently leaves behind is a refundable credit and a non-refundable offset.
+  const flat = M.income.filter(i => i.type === "distribution" && !ammaComponents(i)
+                                 && num(i.gross_aud || i.amount) > 0);
+  if (flat.length)
+    push("med", flat.length + " trust distribution" + (flat.length>1?"s are":" is") + " a single figure with no AMMA breakdown",
+      "The franking credits and foreign tax inside a distribution are only claimable once they are entered separately. Open the row and enter the components from the annual tax statement.");
+
+  // The adjustment belongs to units, and the ledger counts holdings. One disposal of a holding
+  // is unambiguous; a second means the accumulated figure should have been split between them,
+  // and nothing here knows how many units each sale covered.
+  const adjusted = {};
+  M.income.forEach(i => { if (i.type === "distribution" && num(i.amit_cost_base_net) && i.holding)
+    adjusted[i.holding] = true; });
+  for (const h of Object.keys(adjusted)) {
+    const sales = M.income.filter(i => i.type === "disposal" && i.holding === h);
+    if (sales.length > 1)
+      push("high", h + " has AMIT cost base adjustments and " + sales.length + " disposals",
+        "The whole adjustment is being applied to each sale. Apportion it across the parcels by hand and enter the adjusted cost base on each disposal.");
+  }
+
   // duplicated income rows across years
   const seen = {};
   for (const i of M.income) {
-    const k = [i.type, i.holding, i.proceeds, i.gross_foreign, i.franked].join("|");
+    // A distribution carrying only foreign or capital-gains components keys as all-blank on the
+    // original three fields, so every such row collided with every other one.
+    const k = [i.type, i.holding, i.proceeds, i.gross_foreign, i.franked,
+               i.gross_aud, i.foreign_aud, i.cg_discount].join("|");
     (seen[k] = seen[k] || []).push(fyOf(i.date));
   }
   const dup = Object.values(seen).filter(v => new Set(v.filter(Boolean)).size > 1);
@@ -1039,7 +1113,9 @@ function setField(coll, id, field, value){
     row.work_pct = (typeof row.work_pct === "object" && row.work_pct) ? row.work_pct : {};
     row.work_pct[activeYear] = num(value);
   }
-  else if (["amount","effective_life","proceeds","cost_base","gross_foreign","fx_rate","tax_withheld_aud","franked","unfranked","credit","gross_aud","disposal_proceeds","work_pct"].includes(field))
+  // amit_cost_base_net is the only one of these that is meaningfully negative: an AMIT excess
+  // reduces the cost base. num() must not be allowed to flatten that sign.
+  else if (["amount","effective_life","proceeds","cost_base","gross_foreign","fx_rate","tax_withheld_aud","franked","unfranked","credit","gross_aud","disposal_proceeds","work_pct","foreign_aud","cg_discount","cg_other","amit_cost_base_net"].includes(field))
     row[field] = num(value);
   else row[field] = value;
   if (field === "treatment") row.treatment_locked = true;
@@ -1772,14 +1848,60 @@ function renderIncome(){
           <td>${i.type==="disposal"?`<input type="date" value="${esc(i.acquired)}" onchange="setField('income','${i.id}','acquired',this.value)">`:"—"}</td>
           <td class="n">${i.type==="disposal"?f("proceeds"):"—"}</td>
           <td class="n">${i.type==="disposal"?f("cost_base"):"—"}</td>
-          <td class="n">${["interest","distribution","staking","airdrop"].includes(i.type)?f("gross_aud"):(i.type==="foreign"?money(grossAud(i)):"—")}</td>
-          <td><button class="tiny danger" onclick="removeRow('income','${i.id}')">${DELETE_LABEL}</button></td>
-        </tr>`; }).join("") : '<tr><td colspan="14" class="empty">No investment income recorded for this year.</td></tr>'}
+          <td class="n">${i.type==="distribution"
+              ? (ammaComponents(i) ? money(distributionIncome(i)) : f("gross_aud"))
+              : (["interest","staking","airdrop"].includes(i.type)?f("gross_aud"):(i.type==="foreign"?money(grossAud(i)):"—"))}</td>
+          <td>${i.type==="distribution"
+              ? `<span class="register-actions">${registerDetailsButton(openIncome===i.id,
+                  `toggleIncome('${i.id}')`, "The AMMA breakdown: franked, foreign, capital gains and cost base")}
+                 <button class="tiny danger" onclick="removeRow('income','${i.id}')">${DELETE_LABEL}</button></span>`
+              : `<button class="tiny danger" onclick="removeRow('income','${i.id}')">${DELETE_LABEL}</button>`}</td>
+        </tr>${openIncome===i.id && i.type==="distribution" ? distributionDetail(i) : ""}`; }).join("")
+        : '<tr><td colspan="14" class="empty">No investment income recorded for this year.</td></tr>'}
       </tbody></table></div>
 
     <div class="note"><b>One FX convention, always</b>
       Pick AUD-per-USD or USD-per-AUD and use it for every row. Mixing the two puts a row out by roughly the square of the rate, which is large enough to matter and small enough to pass a glance. The Data tab warns if both appear.</div>`;
 }
+
+// A distribution has more parts than a table row can hold, so they live behind Details — the
+// same shape the Assets register uses. Every figure here comes off one document: the AMMA
+// statement the fund issues after 30 June. Nothing on this panel can be taken from a bank feed.
+function distributionDetail(i){
+  const f = (k,label,hint) => `<div class="fld"><label>${label}</label>
+    <input class="n" type="number" step="0.01" value="${i[k]==null||i[k]===""?"":num(i[k])}"
+      onchange="setField('income','${i.id}','${k}',this.value)">
+    ${hint?`<span class="sub" style="font-size:12px">${hint}</span>`:""}</div>`;
+  const adj = amitAdjustment(i.holding, null);
+  return `<tr class="sub"><td colspan="14" style="padding:14px 16px">
+    <div class="formrow" style="margin:0 0 10px">
+      ${f("franked","Franked distribution","→ I13")}
+      ${f("unfranked","Unfranked / other Australian income","→ I13")}
+      ${f("credit","Share of franking credit","→ I13, and refundable as an offset")}
+    </div>
+    <div class="formrow" style="margin:0 0 10px">
+      ${f("foreign_aud","Foreign source income (AUD)","→ I20")}
+      ${f("tax_withheld_aud","Foreign tax paid (AUD)","Non-refundable offset — claim it or lose it")}
+    </div>
+    <div class="formrow" style="margin:0 0 10px">
+      ${f("cg_discount","Capital gain — discount method, GROSSED UP",
+          "Double the discounted figure on the statement. The 50% comes off after your losses, not before.")}
+      ${f("cg_other","Capital gain — other method","Not eligible for the discount")}
+    </div>
+    <div class="formrow" style="margin:0">
+      ${f("amit_cost_base_net","AMIT cost base net amount",
+          "Not income. Negative for an excess (cost base down), positive for a shortfall (up).")}
+      <div class="fld"><label>Accumulated for ${esc(i.holding || "this holding")}</label>
+        <input class="n" readonly value="${money(adj)}">
+        <span class="sub" style="font-size:12px">Applied to a disposal's cost base when you sell.</span></div>
+    </div>
+    <div class="note" style="margin-top:12px"><b>Capital gains are not added to income here</b>
+      They go through the capital gains calculation so your losses reduce them before the
+      discount halves what is left. Adding a pre-discounted figure to I18 directly would deny
+      the losses their first bite and then halve what they had already reduced.</div>
+  </td></tr>`;
+}
+function toggleIncome(id){ openIncome = openIncome === id ? null : id; render(); }
 
 function renderYear(){
   // Automatically projected pool years are calculated output. Viewing one must not turn

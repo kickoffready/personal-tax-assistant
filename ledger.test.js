@@ -823,6 +823,85 @@ setModel({years:[{year:'2025-26',cf_capital_loss:1000}],income:[
 D=derive(); c=D.cgt['2025-26'];
 t('carried-forward loss applied before discount', near(c.netGain,2500), c.netGain.toFixed(2),'2500.00');
 
+/* ---- a trust distribution is one payment made of parts ---- */
+// An ETF pays cash once and reports it on an AMMA statement as five different things. Entered
+// as a single figure it still lodges, which is why getting this wrong is quiet: the return is
+// accepted and the credits inside it are simply never claimed.
+console.log('\\n— an ETF distribution, broken out');
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d1',type:'distribution',date:'2026-06-30',holding:'FUNDA',
+   franked:100,unfranked:50,credit:42.86,foreign_aud:200,tax_withheld_aud:30,
+   cg_discount:400,cg_other:100}]});
+D=derive();
+let LI = D.lodgment['2025-26'].income, OFF = D.lodgment['2025-26'].offsets;
+t('the Australian parts reach I13', near(LI.I13.total,192.86), LI.I13.total.toFixed(2),'192.86');
+t('the foreign part reaches I20, not I13', near(LI.I20.total,200), LI.I20.total.toFixed(2),'200.00');
+t('the franking credit is claimed as a refundable offset',
+  near((OFF.find(o=>/Franking/.test(o.name))||{}).amount, 42.86),
+  JSON.stringify(OFF.map(o=>o.name)), 'Franking credits');
+t('the foreign tax is claimed as a non-refundable offset',
+  near((OFF.find(o=>/Foreign/.test(o.name))||{}).amount, 30),
+  JSON.stringify(OFF.map(o=>o.name)), 'Foreign income tax offset');
+// 400 discounted to 200, plus 100 taxed in full.
+t('the capital gain is discounted, not carried into income whole',
+  near(LI.I18.total,300), LI.I18.total.toFixed(2),'300.00');
+t('and it is not double counted as income', LI.I13.total < 200, LI.I13.total.toFixed(2),'no capital gain in I13');
+
+// The ordering is the whole point. Discount first would give 1000/2 - 400 = 100.
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d2',type:'distribution',date:'2026-06-30',holding:'FUNDA',cg_discount:1000},
+  {id:'s1',type:'disposal',date:'2026-01-10',acquired:'2025-08-01',proceeds:600,cost_base:1000}]});
+D=derive(); c=D.cgt['2025-26'];
+t('a trust capital gain meets your losses before the discount, not after',
+  near(c.netGain,300), c.netGain.toFixed(2),'300.00');
+
+// Files written before any of this existed still have to lodge the same numbers.
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d3',type:'distribution',date:'2026-06-30',holding:'FUNDB',gross_aud:500}]});
+D=derive();
+t('a distribution with no breakdown still posts its whole value to I13',
+  near(D.lodgment['2025-26'].income.I13.total,500),
+  D.lodgment['2025-26'].income.I13.total.toFixed(2),'500.00');
+t('and says so, because the credits inside it are going unclaimed',
+  /single figure with no AMMA breakdown/.test(D.warnings.map(x=>x.title).join('|')),
+  D.warnings.map(x=>x.title).join('|')||'none','flag');
+
+/* ---- AMIT cost base: recorded now, felt years later ---- */
+const AMIT = net => ({years:[{year:'2025-26'}],income:[
+  {id:'d4',type:'distribution',date:'2025-08-01',holding:'FUNDA',amit_cost_base_net:net},
+  {id:'s2',type:'disposal',date:'2026-01-10',acquired:'2020-01-01',holding:'FUNDA',
+   proceeds:10000,cost_base:4000}]});
+setModel(AMIT(0)); D=derive();
+t('with no adjustment the gain is the plain one', near(D.cgt['2025-26'].netGain,3000),
+  D.cgt['2025-26'].netGain.toFixed(2),'3000.00');
+setModel(AMIT(-25)); D=derive();
+t('an excess lowers the cost base, so the gain rises', near(D.cgt['2025-26'].netGain,3012.50),
+  D.cgt['2025-26'].netGain.toFixed(2),'3012.50');
+setModel(AMIT(25)); D=derive();
+t('a shortfall raises it, so the gain falls', near(D.cgt['2025-26'].netGain,2987.50),
+  D.cgt['2025-26'].netGain.toFixed(2),'2987.50');
+t('an AMIT-only row is not income', D.lodgment['2025-26'].income.I13===undefined,
+  JSON.stringify(Object.keys(D.lodgment['2025-26'].income)),'no I13');
+
+// A distribution declared after the sale cannot have adjusted what was already sold.
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d5',type:'distribution',date:'2026-06-30',holding:'FUNDA',amit_cost_base_net:-25},
+  {id:'s3',type:'disposal',date:'2026-01-10',acquired:'2020-01-01',holding:'FUNDA',
+   proceeds:10000,cost_base:4000}]});
+D=derive();
+t('an adjustment dated after the disposal does not reach back', near(D.cgt['2025-26'].netGain,3000),
+  D.cgt['2025-26'].netGain.toFixed(2),'3000.00');
+
+// The ledger counts holdings, not units, so it cannot split an adjustment between two sales.
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d6',type:'distribution',date:'2025-08-01',holding:'FUNDA',amit_cost_base_net:-25},
+  {id:'s4',type:'disposal',date:'2026-01-10',acquired:'2020-01-01',holding:'FUNDA',proceeds:5000,cost_base:2000},
+  {id:'s5',type:'disposal',date:'2026-03-10',acquired:'2020-01-01',holding:'FUNDA',proceeds:5000,cost_base:2000}]});
+D=derive();
+t('two sales of an adjusted holding are flagged rather than guessed at',
+  /AMIT cost base adjustments and 2 disposals/.test(D.warnings.map(x=>x.title).join('|')),
+  D.warnings.map(x=>x.title).join('|')||'none','flag');
+
 console.log('\\n— lodgment totals');
 setModel({years:[{year:'2025-26',wfh_method:'fixed',wfh_hours:1000,marginal:0.32}],
   assets:[{asset_id:'A-3',description:'cable',purchase_date:'2025-08-01',cost:200,treatment:'immediate',work_pct:{'2025-26':100}}],
