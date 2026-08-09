@@ -308,6 +308,16 @@ function filingSeason(today){
   const m = Number((today || todayISO()).slice(5,7));
   return m >= 7 && m <= 10;
 }
+// The date box decides which return a row lands in, so it has to open inside the year on
+// screen. Today is kept when it genuinely falls in that year; otherwise it clamps to the
+// nearest edge — year end for a year already closed, year start for one not yet begun. A box
+// defaulting to today files an FY2025-26 receipt into FY2026-27 every day from 1 July.
+function entryDateFor(fy, today){
+  const now = today || todayISO();
+  if (!fy) return now;
+  const start = iso(fyStart(fy)), end = iso(fyEnd(fy));
+  return now < start ? start : now > end ? end : now;
+}
 function daysBetween(a,b){ return Math.round((b-a)/86400000) + 1; }
 function daysHeldIn(fy, purchase, disposal){
   const s = fyStart(fy), e = fyEnd(fy);
@@ -361,7 +371,7 @@ function uid(p){ return p + "-" + Math.random().toString(36).slice(2,8); }
 // row arriving by any route gets an id no other row holds.
 function allocateAssetId(fy, taken){
   const held = taken || new Set(M.assets.map(a => a.asset_id).filter(Boolean));
-  const year = fy || activeYear || fyOf(todayISO()) || "2025-26";
+  const year = fy || activeYear || reportingYear() || "2025-26";
   const yr = parseInt(String(year).slice(0,4),10) + 1;
   let n = 1, id;
   do { id = "A-" + yr + "-" + String(n++).padStart(3,"0"); } while (held.has(id));
@@ -1443,7 +1453,7 @@ function renderAssets(){
       <tbody>
         <tr class="add">
           <td><input id="a-item-supplier" placeholder="14-inch laptop — Apple" oninput="previewAssetEntry()"></td>
-          <td><input id="a-date" type="date" value="${todayISO()}" oninput="previewAssetEntry()"></td>
+          <td><input id="a-date" type="date" value="${entryDateFor(activeYear)}" oninput="previewAssetEntry()"></td>
           <td class="n"><input id="a-cost" class="n" type="number" step="0.01" placeholder="incl. GST" oninput="previewAssetEntry()"></td>
           <td class="n"><input id="a-wp" class="n" type="number" step="1" min="0" max="100" placeholder="0–100" oninput="previewAssetEntry()"></td>
           <td>${assetPurposeSelect("", null, "previewAssetEntry()", 'id="a-cat"', true)}
@@ -1616,7 +1626,7 @@ function renderExpenses(){
               below. The entry row is the first row of the table, not a form beside it. */""}
         <tr class="add">
           <td><input id="e-sup" placeholder="supplier" oninput="previewExpensePurpose()"></td>
-          <td><input id="e-date" type="date" value="${todayISO()}" oninput="previewExpenseEntry()">
+          <td><input id="e-date" type="date" value="${entryDateFor(activeYear)}" oninput="previewExpenseEntry()">
             <label class="entry-repeat" title="Number of monthly charges to add, including the first date">repeat monthly ×
               <input id="e-repeat" class="n" type="number" step="1" min="1" max="60" value="1" oninput="previewExpenseEntry()"></label></td>
           <td class="n"><input id="e-amt" class="n" type="number" step="0.01" placeholder="each" oninput="previewExpenseEntry()"></td>
@@ -1739,7 +1749,7 @@ function renderIncome(){
         <th>Acquired</th><th class="n">Proceeds</th><th class="n">Cost base</th><th class="n">AUD</th><th></th></tr></thead>
       <tbody>
         <tr class="add">
-          <td><input id="i-date" type="date" value="${todayISO()}"></td>
+          <td><input id="i-date" type="date" value="${entryDateFor(activeYear)}"></td>
           <td><select id="i-type">${types.map(t=>`<option>${t}</option>`).join("")}</select></td>
           <td><input id="i-hold" placeholder="holding"></td>
           <td class="n" colspan="10"><input id="i-amt" class="n" type="number" step="0.01"
@@ -1963,7 +1973,7 @@ function previewAssetEntry(){
   if (!(cost > 0) || rawPct === "" || !Number.isFinite(pctValue) || pctValue < 0 || pctValue > 100) {
     claimOut.textContent = "—"; return;
   }
-  const date = $("#a-date").value || todayISO(), fy = fyOf(date);
+  const date = $("#a-date").value || entryDateFor(activeYear), fy = fyOf(date);
   let claim = cost * pctValue / 100;
   if (treatment === "pool") claim *= POOL_FIRST_YEAR;
   else if (treatment === "schedule") {
@@ -2022,7 +2032,7 @@ function addExpense(){
 }
 function addIncome(){
   const type = $("#i-type").value, amt = num($("#i-amt").value);
-  const r = { id: uid("i"), date: $("#i-date").value || todayISO(), type,
+  const r = { id: uid("i"), date: $("#i-date").value || entryDateFor(activeYear), type,
     holding: $("#i-hold").value.trim() };
   if (type === "disposal") r.proceeds = amt;
   else if (type === "foreign") r.gross_foreign = amt;

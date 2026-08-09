@@ -2118,6 +2118,44 @@ t('and offers only that year until something is entered',
   vm.runInContext('JSON.stringify(derived.years)',blank)===JSON.stringify([RY]),
   vm.runInContext('JSON.stringify(derived.years)',blank), JSON.stringify([RY]));
 
+// Landing on the right year is only half of it. The date box is what actually routes a row —
+// fyOf(date) owns the financial year everywhere downstream — and it defaulted to today, so a
+// receipt typed while lodging FY2025-26 filed itself into FY2026-27.
+console.log('\n— the entry date opens inside the year on screen');
+const dateBoot = lockBoot();
+const eFor = (fy, today) => vm.runInContext(`entryDateFor(${JSON.stringify(fy)},${JSON.stringify(today)})`, dateBoot);
+t('today is kept when it falls inside that year', eFor('2025-26','2025-09-01')==='2025-09-01',
+  eFor('2025-26','2025-09-01'), '2025-09-01');
+t('a year already closed clamps to its 30 June', eFor('2025-26','2026-08-09')==='2026-06-30',
+  eFor('2025-26','2026-08-09'), '2026-06-30');
+t('a year not yet begun clamps to its 1 July', eFor('2028-29','2026-08-09')==='2028-07-01',
+  eFor('2028-29','2026-08-09'), '2028-07-01');
+t('the boundaries themselves are inside', eFor('2025-26','2026-06-30')==='2026-06-30',
+  eFor('2025-26','2026-06-30'), '2026-06-30');
+t('no year on screen leaves today alone', eFor(null,'2026-08-09')==='2026-08-09',
+  eFor(null,'2026-08-09'), '2026-08-09');
+
+// The property that matters, against the real clock rather than an injected one: whatever the
+// box opens at, it must belong to the year being viewed. RY has always closed by today, and
+// NEXT is always the year today sits in, so both hold year-round without a hardcoded FY.
+t('the default always routes to the year being viewed',
+  vm.runInContext(`fyOf(entryDateFor('${RY}'))==='${RY}' && fyOf(entryDateFor('${NEXT}'))==='${NEXT}'`, dateBoot),
+  vm.runInContext(`[fyOf(entryDateFor('${RY}')),fyOf(entryDateFor('${NEXT}'))].join(',')`, dateBoot),
+  [RY,NEXT].join(','));
+t('and on the year being lodged that is its 30 June, not today',
+  vm.runInContext(`entryDateFor('${RY}')===iso(fyEnd('${RY}')) && entryDateFor('${RY}')!==todayISO()`, dateBoot),
+  vm.runInContext(`entryDateFor('${RY}')`, dateBoot), (Number(RY.slice(0,4))+1)+'-06-30');
+
+// What the three registers actually put on screen.
+const dateDom = (() => { const c = boot({}, false, true); vm.runInContext(code, c); return c; })();
+vm.runInContext(TWO_YEARS + `activeYear='${RY}'; render();`, dateDom);
+[['#v-expenses','e-date'],['#v-assets','a-date'],['#v-income','i-date']].forEach(([view,id]) => {
+  const html = dateDom.DOM[view].innerHTML;
+  const got = (html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`)) || [])[1];
+  t(`the ${id} box opens in the year being lodged`, fyOf_(got)===RY, got, 'a date in '+RY);
+});
+function fyOf_(s){ return vm.runInContext(`fyOf(${JSON.stringify(s||'')})`, dateBoot); }
+
 const lockStore = {};
 const sea1 = lockBoot(lockStore);
 vm.runInContext(OPEN(inSeason(RY)), sea1);
