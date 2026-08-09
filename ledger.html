@@ -873,7 +873,10 @@ function allYears(){
     const last = [...s].sort().pop();
     for (let f = firstPoolYear; f <= last; f = fyNext(f)) s.add(f);
   }
-  if (!s.size) s.add(fyOf(todayISO()) || "2025-26");
+  // An empty ledger has no entered year to offer, and the year you are standing in is the one
+  // you cannot lodge yet. Seed the picker with the return actually open — otherwise a first
+  // open lands on FY2026-27 in August 2026, which is the whole mistake this file keeps making.
+  if (!s.size) s.add(reportingYear() || "2025-26");
   return [...s].sort();
 }
 function defaultYearRec(fy){

@@ -2107,6 +2107,17 @@ vm.runInContext(`M.years=[{year:'${PRIOR}'}];
 t('nothing recorded in that year yet, so it falls back to the latest entered',
   vm.runInContext('activeYear',lnd2)===PRIOR, vm.runInContext('activeYear',lnd2), PRIOR);
 
+// A first open, before any file is loaded. There is no entered year to fall back to, so the
+// picker is seeded — and it was seeded with the year you are standing in, which is the one
+// year you cannot lodge.
+const blank = lockBoot();
+vm.runInContext(`M=emptyModel(); activeYear=null; render();`, blank);
+t('an empty ledger opens on the return that is open, not the year you are in',
+  vm.runInContext('activeYear',blank)===RY, vm.runInContext('activeYear',blank), RY);
+t('and offers only that year until something is entered',
+  vm.runInContext('JSON.stringify(derived.years)',blank)===JSON.stringify([RY]),
+  vm.runInContext('JSON.stringify(derived.years)',blank), JSON.stringify([RY]));
+
 const lockStore = {};
 const sea1 = lockBoot(lockStore);
 vm.runInContext(OPEN(inSeason(RY)), sea1);
