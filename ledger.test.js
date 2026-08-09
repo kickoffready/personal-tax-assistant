@@ -1990,5 +1990,44 @@ t('the asset confirmation names its first claim year',
   vm.runInContext("entryNotice.text", routedAsset).includes('FY 2026–27'),
   vm.runInContext("entryNotice.text", routedAsset), 'mentions FY 2026–27');
 
+/* ------------------------------------------------------------------
+   The Assets register lists a year, not a shoebox
+   ------------------------------------------------------------------ */
+// A register that shows every asset in every year reports finished claims as though
+// they were still open. Holding an asset and claiming it are different facts.
+const held = boot();
+vm.runInContext(code, held);
+vm.runInContext(`M.assets = [
+  { asset_id:"A1", item_supplier:"desk", purchase_date:"2025-08-01", cost:250,
+    work_pct:80, treatment:"immediate" },
+  { asset_id:"A2", item_supplier:"laptop", purchase_date:"2025-08-01", cost:900,
+    work_pct:80, treatment:"pool" },
+  { asset_id:"A3", item_supplier:"monitor", purchase_date:"2025-08-01", cost:800,
+    work_pct:80, treatment:"pool", disposal_date:"2025-11-01", disposal_proceeds:400 },
+  { asset_id:"A4", item_supplier:"chair", purchase_date:"2026-09-01", cost:700,
+    work_pct:80, treatment:"pool" }
+];
+M.years = [{year:"2025-26", wfh_method:"fixed", wfh_hours:0, marginal:0.32},
+           {year:"2026-27", wfh_method:"fixed", wfh_hours:0, marginal:0.32}];
+derive();`, held);
+
+const inYear = (id, fy) =>
+  vm.runInContext(`assetInYear(M.assets.find(a=>a.asset_id==="${id}"), "${fy}")`, held);
+
+t('an immediate deduction shows in the year it was taken',
+  inYear("A1", "2025-26") === true, inYear("A1", "2025-26"), true);
+t('and never again — the claim is finished, not pending',
+  inYear("A1", "2026-27") === false, inYear("A1", "2026-27"), false);
+t('a pooled asset keeps its place, because the pool keeps deducting',
+  inYear("A2", "2026-27") === true, inYear("A2", "2026-27"), true);
+t('an asset disposed of in an earlier year drops out',
+  inYear("A3", "2026-27") === false, inYear("A3", "2026-27"), false);
+t('but still appears in the year it was disposed of',
+  inYear("A3", "2025-26") === true, inYear("A3", "2025-26"), true);
+t('an asset bought in a later year is not backdated into this one',
+  inYear("A4", "2025-26") === false, inYear("A4", "2025-26"), false);
+t('and appears once its own year arrives',
+  inYear("A4", "2026-27") === true, inYear("A4", "2026-27"), true);
+
 console.log("\n" + R.pass + " passed, " + R.fail + " failed\n");
 process.exit(R.fail ? 1 : 0);

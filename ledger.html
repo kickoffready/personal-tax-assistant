@@ -798,6 +798,23 @@ function treatmentFor(cost){
 // date remains the explicit fallback instead of being copied into a new persisted field.
 function assetStartDate(a){ return a.start_date || a.purchase_date; }
 
+// An asset belongs in a year's register when that year can still produce a claim from it.
+// The register lists holdings rather than transactions, which is why it is not simply
+// filtered by purchase date — a pooled asset keeps deducting for years after the year it
+// was bought. But the converse was never true: an immediate deduction taken in an earlier
+// year, an asset already disposed of, one written off to nothing, or one bought in a later
+// year are all finished or not yet started, and each showed as a row claiming "—" in every
+// other year. Those rows are noise, and noise in a register reads as something unclaimed.
+function assetInYear(a, fy){
+  const started = fyOf(assetStartDate(a));
+  if (!started || !fy || started > fy) return false;
+  const gone = a.disposal_date ? fyOf(a.disposal_date) : null;
+  if (gone && gone < fy) return false;
+  if (a.treatment === "immediate") return started === fy;
+  if (a.treatment === "pool") return true;
+  return derived.dep.some(r => r.asset_id === a.asset_id && r.year === fy);
+}
+
 /* ============================================================
    DERIVE — everything computed, nothing stored
    ============================================================ */
@@ -1650,10 +1667,13 @@ function renderCGTsummary(){
 }
 
 function renderAssets(){
-  const rows = M.assets.slice().sort((a,b) => (a.purchase_date||"").localeCompare(b.purchase_date||""));
+  const rows = M.assets.filter(a => assetInYear(a, activeYear))
+    .sort((a,b) => (a.purchase_date||"").localeCompare(b.purchase_date||""));
+  const hidden = M.assets.length - rows.length;
   $("#v-assets").innerHTML = `
-    <h2>Assets</h2>
-    <p class="sub">Add each item once. The cost suggests how it may be claimed, and you can change that suggestion in Details. Record a disposal instead of deleting the asset.</p>
+    <h2>Assets — FY ${fyLabel(activeYear)}</h2>
+    <p class="sub">Add each item once. The cost suggests how it may be claimed, and you can change that suggestion in Details. Record a disposal instead of deleting the asset.
+    ${hidden ? `${hidden} other asset${hidden>1?"s are":" is"} held but claims nothing this year — finished, disposed of, or bought later. Change the year to see ${hidden>1?"them":"it"}.` : ""}</p>
     ${entryStatus("assets")}
 
     <div class="tw"><table class="register">
@@ -1695,7 +1715,9 @@ function renderAssets(){
             "This is a service, not a lasting item — move it to Expenses.",
             `removeRow('assets','${a.asset_id}')`, "Delete this mistaken asset row.")}</td>
         </tr>${openAsset===a.asset_id ? assetDetail(a) : ""}`; }).join("")
-        : '<tr><td colspan="7" class="empty">No assets yet. Add one at purchase, while you still remember why and how it earns income.</td></tr>'}
+        : `<tr><td colspan="7" class="empty">${M.assets.length
+            ? "No asset claims anything in FY " + fyLabel(activeYear) + ". Change the year to see the ones you hold."
+            : "No assets yet. Add one at purchase, while you still remember why and how it earns income."}</td></tr>`}
       </tbody></table></div>
 
     <div class="note"><b>Cost suggests how an asset is claimed; it does not settle every condition</b>
