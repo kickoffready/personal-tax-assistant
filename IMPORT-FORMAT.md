@@ -176,9 +176,8 @@ it back. Guess, mark your reasoning in `basis`, and let the person with the rece
 
 - **The issuer.** Apple bills a cloud plan at $19 a month and a MacBook at $3,499 from the same
   address. Amazon, Officeworks, JB Hi-Fi and Harvey Norman all sell both. The issuer decides
-  the row's *name*; it never decides its *kind*. `gmail-to-ledger.gs` currently makes exactly
-  this mistake — `{ match: /officeworks|jb ?hi-?fi|apple ?store/i, name: "Equipment supplier",
-  label: "D5" }` sends every Apple Store receipt, laptop or not, to `expenses` as D5.
+  the row's *name*; it never decides its *kind*. Supplier rules for those mixed retailers must
+  therefore omit a fixed kind and let document signals route the row.
 - **One-off versus recurring, judged from one document.** An annual renewal looks like a
   one-off. Recurrence is a property of the file, not of the receipt.
 - **A large total.** A $700 Adobe plan is a service. A $310 dock is a thing.
@@ -253,7 +252,7 @@ as the output. This is a row a person has to finish.
 A converter never sets a work-use percentage. Not when the supplier rule matched, not when
 the amount parsed cleanly, not ever.
 
-This was got wrong once and is worth stating plainly: `gmail-to-ledger.gs` used
+This was implemented incorrectly once and is worth stating plainly: `gmail-to-ledger.gs` used
 `work_pct: confident ? 100 : 0`, which reads a **parse** result as a **claim** decision.
 Sixteen cleanly-parsed telco rows would have arrived claiming 100% work use. A telco bill
 parsing perfectly says nothing whatever about how much of your phone is work.
