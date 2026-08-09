@@ -2068,5 +2068,113 @@ t('an asset bought in a later year is not backdated into this one',
 t('and appears once its own year arrives',
   inYear("A4", "2026-27") === true, inYear("A4", "2026-27"), true);
 
+/* ------------------------------------------------------------------
+   Filing season: open on the return that is due, and pin it
+   ------------------------------------------------------------------ */
+// From 1 July to 31 October you are lodging the year that just ended, so the newest year in
+// the file is the wrong guess exactly when the ledger is busiest. Dates are passed in rather
+// than read from the clock, so none of this rots after 30 June.
+console.log("\n— filing season");
+
+const seaCtx = lockBoot();
+const season = d => vm.runInContext(`filingSeason('${d}')`, seaCtx);
+t('30 June is not filing season', season('2026-06-30')===false, season('2026-06-30'), false);
+t('1 July opens it', season('2026-07-01')===true, season('2026-07-01'), true);
+t('31 October is the last day', season('2026-10-31')===true, season('2026-10-31'), true);
+t('1 November closes it', season('2026-11-01')===false, season('2026-11-01'), false);
+
+// A date inside, and outside, the window whose reporting year is the given FY — derived from
+// the FY itself so these follow reportingYear() over the rollover.
+const inSeason  = fy => (Number(fy.slice(0,4)) + 1) + '-08-09';
+const outSeason = fy => (Number(fy.slice(0,4)) + 1) + '-12-01';
+const LAND = `M.years=[{year:'${RY}',marginal:0.32},{year:'${NEXT}',marginal:0.32}];
+  M.expenses=[{id:'l1',date:'${sep(RY)}',supplier:'union',amount:600,work_pct:100,label:'D5'},
+              {id:'l2',date:'${sep(NEXT)}',supplier:'union',amount:600,work_pct:100,label:'D5'}];`;
+const OPEN = today => LAND + `activeYear=null; render(); restoreUI(); render();` +
+  (today ? ` maybeAutoLock('${today}');` : "");
+
+// The reported bug: one row dated after 1 July moved the landing year off the return due in
+// October, and an import into that return then rendered as an empty register.
+const lnd1 = lockBoot();
+vm.runInContext(LAND + `activeYear=null; render();`, lnd1);
+t('opens on the year being lodged, not the newest row entered',
+  vm.runInContext('activeYear',lnd1)===RY, vm.runInContext('activeYear',lnd1), RY);
+
+const lnd2 = lockBoot();
+vm.runInContext(`M.years=[{year:'${PRIOR}'}];
+  M.expenses=[{id:'prj1',date:'${sep(PRIOR)}',supplier:'union',amount:600,work_pct:100,label:'D5'}];
+  activeYear=null; render();`, lnd2);
+t('nothing recorded in that year yet, so it falls back to the latest entered',
+  vm.runInContext('activeYear',lnd2)===PRIOR, vm.runInContext('activeYear',lnd2), PRIOR);
+
+const lockStore = {};
+const sea1 = lockBoot(lockStore);
+vm.runInContext(OPEN(inSeason(RY)), sea1);
+t('in filing season the ledger opens locked', vm.runInContext('yearLocked',sea1)===true,
+  vm.runInContext('yearLocked',sea1), true);
+t('pinned to the return being lodged', vm.runInContext('activeYear',sea1)===RY,
+  vm.runInContext('activeYear',sea1), RY);
+
+// A lock you cannot get out of is a cage. Unlocking has to outlive the reload that would
+// otherwise reapply it.
+vm.runInContext('toggleYearLock();', sea1);
+const sea2 = lockBoot(lockStore);
+vm.runInContext(OPEN(inSeason(RY)), sea2);
+t('unlocking survives a reload', vm.runInContext('yearLocked',sea2)===false,
+  vm.runInContext('yearLocked',sea2), false);
+
+const sea3 = lockBoot(lockStore);
+vm.runInContext(OPEN(inSeason(NEXT)), sea3);
+t('but a new reporting year re-arms it', vm.runInContext('yearLocked',sea3)===true,
+  vm.runInContext('yearLocked',sea3), true);
+t('on the year that has become due', vm.runInContext('activeYear',sea3)===NEXT,
+  vm.runInContext('activeYear',sea3), NEXT);
+
+const sea4 = lockBoot();
+vm.runInContext(`M.years=[{year:'${PRIOR}'}];
+  M.expenses=[{id:'q1',date:'${sep(PRIOR)}',supplier:'union',amount:600,work_pct:100,label:'D5'}];
+  activeYear=null; render(); maybeAutoLock('${inSeason(RY)}');`, sea4);
+t('nothing in the reporting year, so nothing is pinned',
+  vm.runInContext('yearLocked',sea4)===false, vm.runInContext('yearLocked',sea4), false);
+
+const sea5 = lockBoot();
+vm.runInContext(OPEN(outSeason(RY)), sea5);
+t('outside the window the ledger opens unlocked', vm.runInContext('yearLocked',sea5)===false,
+  vm.runInContext('yearLocked',sea5), false);
+t('still on the return being lodged', vm.runInContext('activeYear',sea5)===RY,
+  vm.runInContext('activeYear',sea5), RY);
+
+// A saved year is only worth restoring if it holds something: the picker offers five projected
+// pool years, and one of those clicked once must not outrank the return being lodged forever.
+const projStore = {};
+const prj1 = lockBoot(projStore);
+vm.runInContext(LAND + `M.assets=[{asset_id:'A-9',item_supplier:'laptop',
+  purchase_date:'${RY.slice(0,4)}-08-01',cost:900,work_pct:80,treatment:'pool'}];
+  activeYear=null; render(); setActiveYear('${vm.runInContext(`fyNext('${NEXT}')`, seaCtx)}');`, prj1);
+const prj2 = lockBoot(projStore);
+vm.runInContext(LAND + `M.assets=[{asset_id:'A-9',item_supplier:'laptop',
+  purchase_date:'${RY.slice(0,4)}-08-01',cost:900,work_pct:80,treatment:'pool'}];
+  activeYear=null; render(); restoreUI();`, prj2);
+t('a projected year holding nothing is not restored over the filing year',
+  vm.runInContext('activeYear',prj2)===RY, vm.runInContext('activeYear',prj2), RY);
+
+/* ---- an import says where it went, and does not move you ---- */
+const impCtx = lockBoot();
+vm.runInContext(LAND + `activeYear='${NEXT}'; render();
+  PLAN = planImport({schema:5, expenses:[{id:'n1',date:'${sep(RY)}',supplier:'Telstra',
+    amount:120,work_pct:0,label:'D5'}]});
+  SUM = planSummary(PLAN);
+  applyImport(PLAN,'gmail.json'); render();`, impCtx);
+const wantFY = 'FY ' + vm.runInContext(`fyLabel('${RY}')`, impCtx);
+t('the import summary names the year it writes to',
+  vm.runInContext('SUM.text',impCtx).includes(wantFY), vm.runInContext('SUM.text',impCtx), wantFY);
+t('the banner records that year too',
+  (vm.runInContext('lastImport.summary.years',impCtx)||[]).includes(RY),
+  vm.runInContext('JSON.stringify(lastImport.summary.years)',impCtx), RY);
+t('the view does not move to follow the rows',
+  vm.runInContext('activeYear',impCtx)===NEXT, vm.runInContext('activeYear',impCtx), NEXT);
+t('and the rows are in the ledger even though they are off screen',
+  vm.runInContext('M.expenses.length',impCtx)===3, vm.runInContext('M.expenses.length',impCtx), 3);
+
 console.log("\n" + R.pass + " passed, " + R.fail + " failed\n");
 process.exit(R.fail ? 1 : 0);

@@ -530,6 +530,10 @@ let activeYear = null;
 // so a stray click on the dropdown silently redirects the next thing you type into a
 // return you already lodged. The lock pins the year while you work in it.
 let yearLocked = false;
+// The reporting year the lock was applied for automatically, so it is applied once and not
+// on every load. Without it, unlocking would last until the next reload and the lock would
+// be a cage rather than an offer.
+let autoLockedFor = null;
 let activeView = "lodgment";
 let openAsset = null;   // asset_id whose detail panel is expanded
 let openGroups = {};    // supplier -> true when an expense group is expanded
@@ -578,6 +582,14 @@ function displayDate(dateStr){
 // year that has finished, so from 1 July it is the one that just closed: in August 2026
 // you are lodging FY2025-26, not the FY2026-27 you are living through.
 function reportingYear(today){ return fyPrev(fyOf(today || todayISO())); }
+// 1 July to 31 October: the window in which the year that just ended is the return being
+// prepared, ending at the self-lodger deadline. Inside it there is exactly one year worth
+// acting on, which is what makes pinning it defensible; outside it the ledger opens
+// unlocked and lets you choose.
+function filingSeason(today){
+  const m = Number((today || todayISO()).slice(5,7));
+  return m >= 7 && m <= 10;
+}
 function daysBetween(a,b){ return Math.round((b-a)/86400000) + 1; }
 function daysHeldIn(fy, purchase, disposal){
   const s = fyStart(fy), e = fyEnd(fy);
@@ -1516,10 +1528,17 @@ function sendToExpenses(assetId){
 function render(){
   derive();
   if (!activeYear || !derived.years.includes(activeYear)) {
-    // Pool projections add future choices to the year picker, but opening a ledger should
-    // still land on its latest entered year rather than jumping four returns ahead.
+    // July to October you are filing the year that just ended, so the newest year in the file
+    // is the wrong guess exactly when the ledger is busiest — one expense typed today, whose
+    // date box defaults to today, is enough to move you off the return that is due. Prefer the
+    // year open for lodgment when the ledger holds anything for it. Pool projections add future
+    // choices to the picker, so the fallback still lands on the latest year actually entered
+    // rather than jumping four returns ahead.
     const entered = enteredYears();
-    activeYear = entered[entered.length-1] || derived.years[derived.years.length-1];
+    const filing = reportingYear();
+    activeYear = entered.includes(filing)
+      ? filing
+      : entered[entered.length-1] || derived.years[derived.years.length-1];
     // The year being locked to has just gone — deleting its last row, or opening a
     // different file. A lock that quietly re-points at another year is worse than none.
     yearLocked = false;
@@ -1559,8 +1578,14 @@ function renderRecovery(){
     out.push(`<div class="note aside" style="margin-top:16px">
       <b>Just imported — check before you claim</b>
       <p><strong>${lastImport.summary.total} row(s)</strong> added${lastImport.from?` from <code>${esc(lastImport.from)}</code>`:""}
-      <strong>${ageText(lastImport.at)}</strong>. Imported work use is whatever the file said.
+      <strong>${ageText(lastImport.at)}</strong>${(lastImport.summary.years||[]).length
+        ? ", into FY " + lastImport.summary.years.map(fyLabel).join(", FY ") : ""}.
+      Imported work use is whatever the file said.
       Undo removes only what this import added — anything you entered or edited yourself stays.</p>
+      ${(lastImport.summary.years||[]).length && !lastImport.summary.years.includes(activeYear)
+        ? `<p style="margin-top:8px"><b>Not in this year.</b> You are viewing FY ${fyLabel(activeYear)},
+           and none of these rows belong to it${yearLocked ? " — the year picker is locked" : ""}.
+           They are in the ledger; change the year to see them.</p>` : ""}
       <p style="margin-top:10px;display:flex;gap:8px">
         <button class="danger" onclick="undoLastImport()">Undo this import</button>
         <button onclick="dismissImport()">Keep them</button>
@@ -1581,7 +1606,10 @@ function renderTopbar(){
   lk.textContent = yearLocked ? "🔒 " + fyLabel(activeYear) : "🔓 lock to " + fyLabel(target);
   lk.setAttribute("aria-pressed", String(yearLocked));
   lk.title = yearLocked
-    ? "FY " + fyLabel(activeYear) + " is pinned — work-use percentages and year settings can only be written to this year. Click to unlock."
+    ? "FY " + fyLabel(activeYear) + " is pinned — work-use percentages and year settings can only be written to this year. "
+      + (autoLockedFor === activeYear
+          ? "Pinned automatically because this return is due 31 October. Click to unlock; it stays unlocked."
+          : "Click to unlock.")
     : canLock
       ? "Jump to FY " + fyLabel(target) + " — the return now being prepared — and pin the picker there."
       : "Nothing recorded in FY " + fyLabel(target) + " yet, so there is no reporting year to lock to.";
@@ -2319,6 +2347,24 @@ function toggleYearLock(){
   moved ? render() : renderTopbar();
   return true;
 }
+// The lock exists to pin the return being prepared; inside the lodgment window that is not a
+// preference, it is the only year worth acting on, so the ledger applies it rather than
+// waiting to be asked. Applied once per reporting year — not on every load — which is what
+// keeps it an offer: unlock it and it stays unlocked, across reloads, until the next 1 July
+// moves the target. The guard is enteredYears() rather than the button's derived.years,
+// because a projected pool year is a reasonable thing to click into and a bad thing to be
+// held in without having asked for it.
+function maybeAutoLock(today){
+  const target = reportingYear(today);
+  if (!filingSeason(today) || !enteredYears().includes(target)) return false;
+  if (autoLockedFor === target) return false;
+  autoLockedFor = target;
+  activeYear = target;
+  yearLocked = true;
+  saveUI();
+  render();
+  return true;
+}
 function rollForward(){
   const next = fyNext(activeYear);
   if (M.years.some(y => y.year === next)) { activeYear = next; saveUI(); render(); return; }
@@ -2520,12 +2566,27 @@ function undoLastImport(){
 // Keeping the rows is a decision too, and it is the one that retires the banner.
 function dismissImport(){ lastImport = null; saveAuto(); render(); }
 
+// Which financial years an import writes to. A converter names its year in the filename and
+// nowhere the ledger reads, so the destination was only ever discoverable by changing the
+// year picker until the rows appeared — which is no way to find out where 37 rows went.
+function importYears(rows){
+  const s = new Set();
+  rows.forEach(r => { const f = fyOf(r.date || r.purchase_date); if (f) s.add(f); });
+  return [...s].sort();
+}
+function yearPhrase(rows){
+  const ys = importYears(rows);
+  return ys.length === 1 ? " into FY " + fyLabel(ys[0])
+       : ys.length > 1  ? " across FY " + ys.map(fyLabel).join(", FY ")
+       : "";
+}
+
 function planSummary(plan){
   const n = o => o.assets.length + o.expenses.length + o.income.length;
   const money2 = rows => rows.reduce((s,r) => s + num(r.amount || r.cost || 0), 0);
   const lines = [];
   for (const kind of ["assets","expenses","income"]) {
-    if (plan.add[kind].length) lines.push(`  add ${plan.add[kind].length} ${kind} (${money(money2(plan.add[kind]))})`);
+    if (plan.add[kind].length) lines.push(`  add ${plan.add[kind].length} ${kind} (${money(money2(plan.add[kind]))})${yearPhrase(plan.add[kind])}`);
     if (plan.skip[kind].length) lines.push(`  skip ${plan.skip[kind].length} ${kind} already present`);
   }
   if (plan.years.length) lines.push(`  add ${plan.years.length} year record(s)`);
@@ -2539,6 +2600,7 @@ function planSummary(plan){
       "both claims it twice.";
   }
   return { total: n(plan.add), skipped: n(plan.skip), cross: (plan.cross||[]).length,
+           years: importYears([...plan.add.assets, ...plan.add.expenses, ...plan.add.income]),
            text: lines.join("\n") || "  nothing to add", warn };
 }
 
@@ -2578,10 +2640,14 @@ function loadFile(file){
       if (!parsed || typeof parsed !== "object" || !("schema" in parsed)) throw new Error("not a ledger file");
       M = migrate(Object.assign(emptyModel(), parsed));
       ["years","assets","expenses","income"].forEach(k => { if (!Array.isArray(M[k])) M[k] = []; });
-      fileName = file.name; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
+      // autoLockedFor is cleared with the rest: a different ledger is a fresh open, and it
+      // should land on the return being lodged the same way the first one did.
+      fileName = file.name; dirty = false; activeYear = null; yearLocked = false; autoLockedFor = null;
+      recoveredAt = null; lastImport = null; entryNotice = null;
       saveUI();
       localStorage.removeItem(AUTOSAVE_KEY);
       render();
+      maybeAutoLock();
     } catch (err) {
       alert("Could not read that file as a ledger.\n\n" + err.message + "\n\nNothing was changed.");
     }
@@ -2627,14 +2693,14 @@ function exportCSV(which){
 }
 function resetAll(){
   if (!confirm("Clear everything in the browser?\n\nAny saved ledger file is untouched. Unsaved changes are lost.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; autoLockedFor = null; recoveredAt = null; lastImport = null; entryNotice = null;
   saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
 }
 function discardRecovery(){
   if (!confirm("Discard the recovered draft?\n\nAnything entered since your last save is lost. Any ledger file on disk is untouched.")) return;
-  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; recoveredAt = null; lastImport = null; entryNotice = null;
+  M = emptyModel(); fileName = null; dirty = false; activeYear = null; yearLocked = false; autoLockedFor = null; recoveredAt = null; lastImport = null; entryNotice = null;
   saveUI();
   localStorage.removeItem(AUTOSAVE_KEY);
   render();
@@ -2684,16 +2750,26 @@ function showView(v){
   document.querySelectorAll(".view").forEach(el => el.classList.toggle("on", el.id === "v-" + v));
 }
 function saveUI(){
-  try { localStorage.setItem(UI_KEY, JSON.stringify({ view: activeView, year: activeYear, locked: yearLocked })); } catch(e){}
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ view: activeView, year: activeYear,
+    locked: yearLocked, autoLockedFor })); } catch(e){}
 }
 function restoreUI(){
   try {
     const s = JSON.parse(localStorage.getItem(UI_KEY) || "null");
     if (!s) return;
+    // Restored before the year, because it is what tells maybeAutoLock() this season has
+    // already been applied — without it an unlocked ledger would re-lock on every reload.
+    autoLockedFor = s.autoLockedFor || null;
     // The lock only survives with the year it was set on. Restoring it against whatever
     // year happens to be active would pin a year nobody chose.
+    //
+    // A saved year is only worth restoring if it holds something. render() never calls
+    // saveUI(), so a stored year was always a deliberate choice — but the picker offers five
+    // projected pool years, and one of those chosen once should not outrank the return being
+    // lodged on every load afterwards. A locked year is exempt: that is the explicit pin.
     let changed = false;
-    if (s.year && derived && derived.years.includes(s.year)) {
+    if (s.year && derived && derived.years.includes(s.year) &&
+        (s.locked || enteredYears().includes(s.year))) {
       changed = activeYear !== s.year || yearLocked !== !!s.locked;
       activeYear = s.year;
       yearLocked = !!s.locked;
@@ -2763,6 +2839,9 @@ function startLedgerApp(){
   render();
   restoreUI();
   render();
+  // Last, so it sees the restored state: a lock released in an earlier session must not be
+  // reapplied here, and only restoreUI() knows that it was.
+  maybeAutoLock();
 }
 function submitAcknowledgement(){
   if (acknowledgementReview) {
