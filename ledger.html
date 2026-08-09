@@ -180,7 +180,7 @@
      until asked. The number you copy onto the return is the one on the head. */
   .lodge-cat { border-bottom:1px dotted var(--rule); }
   .lodge-cat:last-child { border-bottom:none; }
-  .lodge-cat-head { display:grid; grid-template-columns:14px 1fr auto; gap:10px; align-items:baseline;
+  .lodge-cat-head { display:grid; grid-template-columns:14px 1fr auto auto; gap:10px; align-items:baseline;
     padding:5px 0; font-size:13px; color:var(--muted); }
   .lodge-cat-head.can-open { cursor:pointer; }
   .lodge-cat-head.can-open:hover { color:var(--ink); }
@@ -1931,6 +1931,7 @@ function catHTML(l){
       <span class="lodge-cat-caret">${openable ? "▸" : ""}</span>
       <span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span>
       <span class="lodge-cat-amt">${money(l.amount)}</span>
+      <button class="tiny" onclick="event.stopPropagation();copyVal(${l.amount.toFixed(2)})">copy</button>
     </div>
     ${openable ? `<div class="lodge-cat-body">${parts.map(p =>
       `<div><span>${esc(p.name)}${p.count > 1 ? ` × ${p.count}` : ""}</span><span>${money(p.amount)}</span></div>`).join("")}</div>` : ""}

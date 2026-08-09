@@ -1649,6 +1649,7 @@ function catHTML(l){
       <span class="lodge-cat-caret">${openable ? "▸" : ""}</span>
       <span>${esc(l.name)}${l.count > 1 ? ` <span style="color:var(--faint)">× ${l.count}</span>` : ""}</span>
       <span class="lodge-cat-amt">${money(l.amount)}</span>
+      <button class="tiny" onclick="event.stopPropagation();copyVal(${l.amount.toFixed(2)})">copy</button>
     </div>
     ${openable ? `<div class="lodge-cat-body">${parts.map(p =>
       `<div><span>${esc(p.name)}${p.count > 1 ? ` × ${p.count}` : ""}</span><span>${money(p.amount)}</span></div>`).join("")}</div>` : ""}

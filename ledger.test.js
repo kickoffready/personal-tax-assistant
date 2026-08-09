@@ -2614,6 +2614,32 @@ t('the D6 row opens without being clicked', /class="lodge-row open"/.test(lodge)
 t('and it says the zeros must be typed, not left blank',
   /do not leave them blank/.test(lodge), '', 'the instruction');
 
+// myTax takes D5 one described row at a time, so the label total is not the figure being
+// transcribed — the category is. A copy button on the label only and not on the rows beneath
+// it left the ten numbers actually being typed to be read off the screen by eye.
+console.log('\n— every category copies its own figure, not just the label total');
+const copyDom = (() => { const c = boot({}, false, true); vm.runInContext(code, c); return c; })();
+vm.runInContext(`M.years=[{year:'${RY}'}];
+  M.assets=[{asset_id:'A-C1',item_supplier:'SSD — Umart',purchase_date:'${sep(RY)}',start_date:'${sep(RY)}',
+    cost:280,treatment:'immediate',category:'Computers',work_pct:{'${RY}':100}},
+   {asset_id:'A-C2',item_supplier:'Chair — Officeworks',purchase_date:'${sep(RY)}',start_date:'${sep(RY)}',
+    cost:150,treatment:'immediate',category:'Furniture',work_pct:{'${RY}':100}}];
+  activeYear='${RY}'; render();`, copyDom);
+const cats = copyDom.DOM['#v-lodgment'].innerHTML;
+const catCopies = (cats.match(/lodge-cat-amt[\s\S]*?copyVal\((\d+\.\d\d)\)/g) || [])
+  .map(s => s.match(/copyVal\((\d+\.\d\d)\)/)[1]);
+t('each category row carries its own copy button', catCopies.length===2,
+  catCopies.length, 2);
+t('and copies the category figure, not the label total',
+  catCopies.includes('280.00') && catCopies.includes('150.00'), catCopies.join(','), '280.00,150.00');
+t('the label total still copies the total', /copyVal\(430\.00\)/.test(cats), '', 'copyVal(430.00)');
+// The button sits inside the head that toggles the row open, so it has to stop the click
+// there. The pool-field buttons deliberately do not: they are in the body, which nothing
+// toggles, and guarding them would state a rule that is not the rule.
+t('copying a category never also toggles the row it sits in',
+  (cats.match(/lodge-cat-amt[\s\S]{0,120}?event\.stopPropagation\(\);copyVal\(/g)||[]).length===2,
+  (cats.match(/lodge-cat-amt[\s\S]{0,120}?event\.stopPropagation\(\);copyVal\(/g)||[]).length, 2);
+
 const lockStore = {};
 const sea1 = lockBoot(lockStore);
 vm.runInContext(OPEN(inSeason(RY)), sea1);
