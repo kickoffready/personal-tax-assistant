@@ -279,6 +279,20 @@ t('year one is 18.75% of what went in', near(P.pool['2025-26'].deduction,58.19),
 t('it reaches the return at D6', near(P.lodgment['2025-26'].deductions.D6.total,58.19),
   P.lodgment['2025-26'].deductions.D6.total.toFixed(2),'58.19');
 t('the asset row shows its share, not a dash', poolClaimCell(M.assets[0]).includes('58.19'),'58.19','58.19');
+
+// myTax will not take one D6 number: three boxes, all required. However the split is worked
+// out, the three have to add back to the D6 total or the return disagrees with the ledger.
+const D6F = poolFields(P.lodgment['2025-26'].deductions.D6.total);
+t('D6 is presented as the three boxes myTax asks for', D6F.length===3, D6F.length, 3);
+t('named exactly as the return names them',
+  D6F.map(f=>f[0]).join('|')==='Low value pool deduction relating to financial investment|'+
+    'Low value pool deduction relating to rental property|Remaining low value pool deduction',
+  D6F.map(f=>f[0]).join('|'), 'the three myTax labels');
+t('work-related assets put nothing against investment or rental',
+  D6F[0][1]===0 && D6F[1][1]===0, [D6F[0][1],D6F[1][1]].join(','), '0,0');
+t('and the three reconcile to the D6 total',
+  near(D6F.reduce((s,f)=>s+f[1],0), P.lodgment['2025-26'].deductions.D6.total),
+  D6F.reduce((s,f)=>s+f[1],0).toFixed(2), '58.19');
 t('year two is 37.5% of the balance', near(P.pool['2026-27'].deduction,94.55), P.pool['2026-27'].deduction.toFixed(2),'94.55');
 activeYear='2026-27';
 t('later years show the asset contribution as a value', poolClaimCell(M.assets[0]).includes('94.55'),
@@ -2234,6 +2248,27 @@ vm.runInContext(TWO_YEARS + `activeYear='${RY}'; render();`, dateDom);
   t(`the ${id} box opens in the year being lodged`, fyOf_(got)===RY, got, 'a date in '+RY);
 });
 function fyOf_(s){ return vm.runInContext(`fyOf(${JSON.stringify(s||'')})`, dateBoot); }
+
+// The Lodgment tab is transcription, so a label that maps to three myTax boxes has to show
+// three — and show them without being expanded first, since a collapsed row is a figure you
+// do not know you still owe.
+console.log('\n— D6 transcribes as the three boxes myTax requires');
+const d6Dom = (() => { const c = boot({}, false, true); vm.runInContext(code, c); return c; })();
+vm.runInContext(`M.years=[{year:'${RY}'}];
+  M.assets=[{asset_id:'A-D',item_supplier:'Dell dock — Officeworks',purchase_date:'${sep(RY)}',
+    cost:310.32,treatment:'pool',work_pct:{'${RY}':100}}];
+  activeYear='${RY}'; render();`, d6Dom);
+const lodge = d6Dom.DOM['#v-lodgment'].innerHTML;
+t('the financial investment box is named and shown',
+  /Low value pool deduction relating to financial investment/.test(lodge), '', 'named');
+t('the rental property box is named and shown',
+  /Low value pool deduction relating to rental property/.test(lodge), '', 'named');
+t('the remaining box is named and shown',
+  /Remaining low value pool deduction/.test(lodge), '', 'named');
+t('the D6 row opens without being clicked', /class="lodge-row open"/.test(lodge),
+  (lodge.match(/class="lodge-row[^"]*"/)||[])[0], 'class="lodge-row open"');
+t('and it says the zeros must be typed, not left blank',
+  /do not leave them blank/.test(lodge), '', 'the instruction');
 
 const lockStore = {};
 const sea1 = lockBoot(lockStore);

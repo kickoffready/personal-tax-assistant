@@ -1731,6 +1731,19 @@ function catHTML(l){
   </div>`;
 }
 
+// myTax does not take one D6 figure. It asks for three boxes and requires all of them, because
+// the investment and rental portions feed net investment loss and net rental income and so
+// cannot be folded into a total. This ledger models work-related assets only — an asset carries
+// no rental or investment-use dimension — so those two are structurally zero rather than
+// unknown, and printing them as zero is what stops them being guessed at on the myTax screen.
+// If an asset ever gains a "relates to", this is the one place that has to learn to split.
+function poolFields(total){
+  return [
+    ["Low value pool deduction relating to financial investment", 0],
+    ["Low value pool deduction relating to rental property", 0],
+    ["Remaining low value pool deduction", total]
+  ];
+}
 function renderLodgment(){
   const L = derived.lodgment[activeYear] || { deductions:{}, income:{} };
   const y = M.years.find(x => x.year === activeYear) || {};
@@ -1740,7 +1753,7 @@ function renderLodgment(){
   const rate = num(y.marginal) || 0.32;
 
   const rowHTML = (label, name, bucket) => `
-    <div class="lodge-row">
+    <div class="lodge-row${label === "D6" ? " open" : ""}">
       <div class="lodge-head" role="button" tabindex="0"
            onclick="this.parentNode.classList.toggle('open')"
            onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.parentNode.classList.toggle('open')}">
@@ -1750,6 +1763,11 @@ function renderLodgment(){
         <button class="tiny" onclick="event.stopPropagation();copyVal(${bucket.total.toFixed(2)})">copy</button>
       </div>
       <div class="lodge-body">
+        ${label === "D6" ? `<p class="sub" style="margin:8px 0 6px">myTax asks for three figures
+          here and requires all three. Every pooled asset in this ledger is work-related, so the
+          first two are zero — type them, do not leave them blank.</p>
+          <ul>${poolFields(bucket.total).map(([n,amt]) => `<li><span>${esc(n)}</span>
+            <span>${money(amt)} <button class="tiny" onclick="copyVal(${amt.toFixed(2)})">copy</button></span></li>`).join("")}</ul>` : ""}
         ${bucket.lines.map(l => catHTML(l)).join("")}
       </div>
     </div>`;
