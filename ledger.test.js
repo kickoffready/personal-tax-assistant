@@ -1350,6 +1350,82 @@ setModel({years:[{year:'2025-26'}],assets:[
 D=derive();
 t('no pool, no complaint', !/must be pooled too/.test(D.warnings.map(x=>x.detail).join('|')),'','silent');
 
+// Leaving the pool was the quietest irreversible edit in the ledger: allocating a low-cost
+// asset cannot be revoked, and setTreatment() asked nothing at all. Filing and assessment are
+// weeks apart, so the year record has to be able to say "lodged" before it can say "assessed" —
+// the gap between the two is exactly when a fresh return is most likely to be edited.
+console.log('\\n— an asset cannot quietly leave a pool it was filed in');
+const POOLED_FILED = (yr={}) => ({years:[Object.assign({year:'2025-26'},yr)],assets:[
+  {asset_id:'A-LP',item_supplier:'Dock — Officeworks',purchase_date:'2025-08-01',start_date:'2025-08-01',
+   cost:600,treatment:'pool',category:'Computers',work_pct:{'2025-26':100}}]});
+
+setModel(POOLED_FILED()); activeYear='2025-26'; derive(); CONFIRMED.length=0;
+setTreatment('A-LP','schedule');
+t('leaving a pool always asks', /out of the low-value pool/.test(CONFIRMED.join(' ')),
+  CONFIRMED.join(' ').slice(0,50), 'asks');
+t('and says the allocation cannot be reversed', /cannot be reversed/.test(CONFIRMED.join(' ')),
+  'said', 'said');
+t('an unfiled year is not accused of contradicting a return',
+  !/already been claimed/.test(CONFIRMED.join(' ')), 'silent', 'silent');
+t('and nothing is recorded against the asset', M.assets[0].pool_allocated_fy===undefined,
+  String(M.assets[0].pool_allocated_fy), 'undefined');
+t('no finding, because the choice was still free',
+  runChecks().filter(x=>/allocated to/.test(x.title)).length===0, 'none', 'none');
+
+// Lodged but not yet assessed — the window the ledger could not previously represent at all.
+setModel(POOLED_FILED({lodged_date:'2026-08-09'})); activeYear='2025-26'; derive(); CONFIRMED.length=0;
+CONFIRM_REPLY=false;
+setTreatment('A-LP','schedule');
+t('declining leaves the asset in the pool', M.assets[0].treatment==='pool', M.assets[0].treatment, 'pool');
+t('and records nothing', M.assets[0].pool_allocated_fy===undefined, String(M.assets[0].pool_allocated_fy), 'undefined');
+CONFIRM_REPLY=true; CONFIRMED.length=0;
+setTreatment('A-LP','schedule');
+t('a lodged year says the allocation is already claimed',
+  /was lodged on 2026-08-09/.test(CONFIRMED.join(' ')) && /already been claimed at D6/.test(CONFIRMED.join(' ')),
+  CONFIRMED.join(' ').slice(-140), 'names the filing');
+t('and the allocation year is recorded on the asset', M.assets[0].pool_allocated_fy==='2025-26',
+  String(M.assets[0].pool_allocated_fy), '2025-26');
+let LEFT = runChecks().filter(x=>/allocated to/.test(x.title));
+t('which raises a high finding naming the asset', LEFT.length===1 && LEFT[0].sev==='high' && /Dock/.test(LEFT[0].title),
+  LEFT.length+'/'+(LEFT[0]||{}).sev, '1/high');
+t('putting it back clears the finding',
+  (setTreatment('A-LP','pool'), runChecks().filter(x=>/allocated to/.test(x.title)).length===0), 'clear', 'clear');
+
+// A move between collections was already warned about on an ASSESSED year. Lodged has to count
+// too, or the warning is absent for the several weeks that matter most.
+t('a move warns on a year that is lodged but not yet assessed',
+  /was lodged on 2026-08-09/.test(moveWarnings('2025-26').join(' ')),
+  moveWarnings('2025-26').join(' ').slice(0,60), 'warns');
+t('and prefers the NOA once it arrives',
+  (M.years[0].noa_date='2026-09-01', /was assessed on 2026-09-01/.test(moveWarnings('2025-26').join(' '))),
+  moveWarnings('2025-26').join(' ').slice(0,60), 'assessed');
+
+// Four of the five kinds of D5 claim file by what the thing IS. Depreciation used to file by
+// how it is CLAIMED — one lump row, no breakdown — so the same asset landed under Computers
+// when written off or pooled and vanished when scheduled.
+console.log('\\n— decline in value files under its category, like every other D5 claim');
+setModel({years:[{year:'2025-26'}],assets:[
+  {asset_id:'A-SSD',item_supplier:'SSD — Umart',purchase_date:'2025-07-01',start_date:'2025-07-01',
+   cost:280,treatment:'immediate',category:'Computers',work_pct:{'2025-26':100}},
+  {asset_id:'A-GPU',item_supplier:'RX9060 — Umart',purchase_date:'2025-07-01',start_date:'2025-07-01',
+   cost:1200,treatment:'schedule',effective_life:4,method:'prime_cost',category:'Computers',work_pct:{'2025-26':100}},
+  {asset_id:'A-CHR',item_supplier:'Chair — Officeworks',purchase_date:'2025-07-01',start_date:'2025-07-01',
+   cost:900,treatment:'schedule',effective_life:10,method:'prime_cost',category:'Furniture',work_pct:{'2025-26':100}}]});
+activeYear='2025-26'; derive();
+const D5L = buildLodgment('2025-26').deductions.D5;
+const row = n => D5L.lines.find(l => l.name===n);
+t('no lump depreciation row survives', !D5L.lines.some(l=>/^depreciation/.test(l.name)),
+  D5L.lines.map(l=>l.name).join(','), 'categories only');
+t('the write-off and the decline share one Computers row', near(row('Computers').amount, 280+300),
+  row('Computers').amount.toFixed(2), '580.00');
+t('and Furniture carries its own decline', near(row('Furniture').amount, 90),
+  row('Furniture').amount.toFixed(2), '90.00');
+t('every category total decomposes to named assets',
+  row('Computers').parts.length===2 && /decline in value/.test(row('Computers').parts.map(p=>p.name).join('|')),
+  row('Computers').parts.map(p=>p.name).join(' | '), 'two parts, one a decline');
+t('and the D5 total is unchanged by where it is filed', near(D5L.total, 280+300+90),
+  D5L.total.toFixed(2), '670.00');
+
 console.log('\\n— CSV exports one file per call');
 setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-C',description:'x',purchase_date:'2025-08-01',cost:400,treatment:'pool',work_pct:{'2025-26':100}}]});
 activeYear='2025-26'; derive();

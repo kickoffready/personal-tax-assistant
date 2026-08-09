@@ -182,6 +182,7 @@
           <tr><td class="k">treatment</td><td class="k">schedule</td><td><code>immediate</code> · <code>pool</code> · <code>schedule</code> — see section 04.</td></tr>
           <tr><td class="k">effective_life</td><td class="k">2</td><td>Years. Blank for immediate and pooled assets.</td></tr>
           <tr><td class="k">method</td><td class="k">diminishing</td><td><code>diminishing</code> · <code>prime_cost</code>. Diminishing value is the default for every scheduled asset; a row created before that default was set keeps the <code>prime_cost</code> it has been claiming. Fixed at acquisition — changing it mid-life is a common error.</td></tr>
+          <tr><td class="k">pool_allocated_fy</td><td>—</td><td>Set only when an asset is taken out of a low-value pool whose allocation year had already been filed. The allocation cannot be revoked, so the ledger keeps the fact and flags the mismatch.</td></tr>
           <tr><td class="k">work_pct</td><td class="k">0.70</td><td>With a note or diary backing it. Can change year to year.</td></tr>
           <tr><td class="k">status</td><td class="k">in_use</td><td><code>in_use</code> · <code>disposed</code> · <code>scrapped</code>.</td></tr>
           <tr><td class="k">disposal_date</td><td>—</td><td>Triggers a balancing adjustment.</td></tr>
@@ -265,6 +266,7 @@
           <tr><td class="k">estimated_result</td><td>Your prediction.</td></tr>
           <tr><td class="k">assessed_result</td><td>What actually happened.</td></tr>
           <tr><td class="k">variance</td><td>The number that tells you whether the model works.</td></tr>
+          <tr><td class="k">lodged_date</td><td>The day the return went in. Weeks can pass before the NOA arrives, and in that gap a filed year would otherwise read as untouched — which is exactly when a fresh return gets edited.</td></tr>
           <tr><td class="k">noa_date</td><td><strong>Starts the two-year amendment clock.</strong></td></tr>
           <tr><td class="k">cf_capital_loss</td><td>Carried-forward net capital loss, as recorded in the lodged return.</td></tr>
         </tbody>
@@ -527,7 +529,7 @@
         <tr><td class="k">Before 30 June</td><td>Decide on any personal super contribution and lodge the notice of intent</td><td>The deduction is lost if the notice is late.</td></tr>
         <tr><td class="k">30 June</td><td>Generate the depreciation rows; export broker history</td><td>Platforms retain only a rolling window.</td></tr>
         <tr><td class="k">Late July</td><td>Check pre-fill is complete before lodging</td><td>Lodging early is the main cause of amended assessments.</td></tr>
-        <tr><td class="k">At lodgment</td><td>Record the NOA date, assessed result and variance; snapshot the year</td><td>Starts the amendment clock and closes the loop.</td></tr>
+        <tr><td class="k">At lodgment</td><td>Record the lodged date the day it goes in; the NOA date, assessed result and variance when the notice arrives; snapshot the year</td><td>The lodged date marks the return as filed before it is assessed. The NOA starts the amendment clock and closes the loop.</td></tr>
       </tbody>
     </table>
   </div>

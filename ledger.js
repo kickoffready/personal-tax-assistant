@@ -884,11 +884,18 @@ function buildLodgment(fy){
     add(out.deductions, "D5", categoryOf(a), num(a.cost) * wpFrac(workPctFor(a, fy)),
         assetIdentity(a) + " (immediate, ≤$300)");
   }
-  // scheduled depreciation
-  const depRows = derived.dep.filter(r => r.year === fy);
-  if (depRows.length) {
-    add(out.deductions, "D5", "depreciation — " + depRows.length + " asset" + (depRows.length>1?"s":""),
-      depRows.reduce((s,r) => s + r.deductible, 0));
+  // scheduled depreciation, filed by category like everything else at D5
+  // The four other kinds of D5 claim report by what the thing IS. This one used to report by
+  // how it is CLAIMED — one "depreciation — N assets" row with no breakdown — so the same
+  // graphics card landed under Computers when written off or pooled and vanished into a lump
+  // when scheduled. The pool's ongoing line is a lump for a reason it can state: no asset owns
+  // a share of a combined balance. A decline in value has no such defence, because every row
+  // in derived.dep names its asset. Same shape as the pool's first year, one line below.
+  for (const r of derived.dep) {
+    if (r.year !== fy || Math.abs(r.deductible) <= 0.005) continue;
+    const a = M.assets.find(x => x.asset_id === r.asset_id);
+    add(out.deductions, "D5", categoryOf(a || r), r.deductible,
+        assetIdentity(a || r) + " (decline in value)");
   }
   // low-value pool
   // D6 shows categories for the year an asset enters the pool, because that share is its
@@ -1123,6 +1130,15 @@ function runChecks(){
     // Until this was implemented, a sale entered against a pooled asset was accepted and
     // ignored. Anyone who recorded one has D6 figures that have now changed, in a year that
     // may already be lodged, so the row says so rather than the numbers quietly differing.
+    // Set by setTreatment() only when the allocation had already been claimed on a filed
+    // return. It stays until the asset goes back in the pool, because the allocation itself
+    // never lapsed — the ledger is the thing that moved away from the return.
+    if (a.pool_allocated_fy && a.treatment !== "pool")
+      push("high", assetLabel(a) + " is claimed outside the low-value pool it was allocated to in FY " + fyLabel(a.pool_allocated_fy),
+        "That allocation was claimed at D6 on a return that has been filed, and allocating an asset "
+        + "to a low-value pool cannot be reversed. This ledger now reports it at D5, so its D5 and D6 "
+        + "no longer match what was lodged, and the pool balance carried into later years is wrong. "
+        + "Put it back to the low-value pool unless an amendment has changed the filed return.");
     if (a.treatment === "pool" && a.disposal_date)
       push("high", assetLabel(a) + " was sold out of the low-value pool in FY " + fyLabel(fyOf(a.disposal_date)),
         "Its sale proceeds at the taxable-use percentage reduce the pool's closing balance that year, "
@@ -1314,14 +1330,27 @@ function removeRow(coll, id){
    row — date, amount, supplier, issuer, source, source_ref, work use, basis — survives.
    ------------------------------------------------------------ */
 
+// Filing and assessment are different events weeks apart, and the ledger could only record the
+// second. In between — exactly when a return is freshest in mind and most likely to be edited —
+// a filed year read as untouched. `lodged_date` is the fact the user knows on the day; the NOA
+// arrives later and is what the amendment window and the retention clock run from.
+function yearFiled(fy){
+  const y = M.years.find(x => x.year === fy);
+  if (!y) return null;
+  if (y.noa_date) return { on: y.noa_date, assessed: true };
+  if (y.lodged_date) return { on: y.lodged_date, assessed: false };
+  return null;
+}
+
 // Warnings that apply to a move in either direction. Consequences, not permissions: the
 // ledger flags and lets you proceed, exactly as it does for the one-way pool.
 function moveWarnings(fy){
   const out = [];
-  const y = M.years.find(x => x.year === fy);
-  if (y && y.noa_date)
-    out.push("FY " + fyLabel(fy) + " was assessed on " + y.noa_date +
-      ". Moving this row changes a return you have already lodged — amend by " + addYears(y.noa_date, 2) + ".");
+  const filed = yearFiled(fy);
+  if (filed)
+    out.push("FY " + fyLabel(fy) + " was " + (filed.assessed ? "assessed" : "lodged") + " on " + filed.on +
+      ". Moving this row changes a return you have already lodged" +
+      (filed.assessed ? " — amend by " + addYears(filed.on, 2) + "." : "."));
   return out;
 }
 
@@ -1881,8 +1910,29 @@ const TREATMENT_RULE = {
 const TREATMENT_CODE = { immediate:"D5", pool:"D6", schedule:"D5" };
 const TREATMENT_NAME = { immediate:"claim now", pool:"low-value pool", schedule:"depreciate" };
 const TREATMENT_LABEL = { immediate:"D5 · claim now", pool:"D6 · low-value pool", schedule:"D5 · depreciate" };
+// Taking an asset OUT of the pool is the quietest irreversible edit in the ledger, and it was
+// the only significant one that asked nothing. Allocating a low-cost asset to a low-value pool
+// cannot be revoked, so once the allocation has been claimed on a filed return the asset is in
+// the pool for the rest of its life and cannot be claimed at D5 instead. Before that it is
+// still a free choice, and the warning says the smaller true thing rather than the larger one.
 function setTreatment(id, value){
   const a = M.assets.find(x => x.asset_id === id); if (!a) return;
+  if (a.treatment === "pool" && value !== "pool") {
+    const allocationFY = fyOf(assetStartDate(a));
+    const filed = yearFiled(allocationFY);
+    const lines = ["Take “" + assetIdentity(a) + "” out of the low-value pool?", "",
+      "Allocating an asset to a low-value pool cannot be reversed. Every later year's pool "
+      + "balance and D6 deduction is recalculated without it."];
+    if (filed)
+      lines.push("",
+        "FY " + fyLabel(allocationFY) + " was " + (filed.assessed ? "assessed" : "lodged") + " on "
+        + filed.on + ", so that allocation has already been claimed at D6. Claiming this asset at "
+        + "D5 instead would report figures the filed return does not carry.");
+    if (!confirm(lines.join("\n"))) return;
+    // Recorded only where it is a permanent fact rather than a same-session correction: the
+    // allocation was claimed on a return that has gone in. runChecks() reads it from here on.
+    if (filed) a.pool_allocated_fy = allocationFY;
+  }
   a.treatment = value;
   a.treatment_locked = value !== treatmentFor(a.cost);
   touch();
@@ -2180,6 +2230,7 @@ function renderYear(){
       <div class="formrow" style="margin:0;background:none;border:none;padding:0">
         <div class="fld"><label>Marginal + levy</label><input class="n" type="number" step="0.01" value="${num(y.marginal)||0.32}" ${set("marginal")}></div>
         <div class="fld"><label>Assessed result</label><input class="n" type="number" step="0.01" value="${num(y.assessed)||""}" ${set("assessed")}></div>
+        <div class="fld"><label>Lodged date</label><input type="date" value="${esc(y.lodged_date)}" ${set("lodged_date")}></div>
         <div class="fld"><label>NOA date</label><input type="date" value="${esc(y.noa_date)}" ${set("noa_date")}></div>
         <div class="fld"><label>Loss carried in</label><input class="n" type="number" step="0.01" value="${num(y.cf_capital_loss)||""}" ${set("cf_capital_loss")}></div>
       </div>
@@ -2410,7 +2461,7 @@ function addIncome(){
 }
 function yearField(f, v){
   const y = yearRec(activeYear);
-  y[f] = ["wfh_method","noa_date"].includes(f) ? v : num(v);
+  y[f] = ["wfh_method","noa_date","lodged_date"].includes(f) ? v : num(v);
   touch();
 }
 function reconField(label, v){

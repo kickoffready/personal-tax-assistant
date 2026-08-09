@@ -190,7 +190,7 @@ Tests belong in the pool section of `personal/ledger.test.js`, near the existing
 
 ```
 node personal/build-ledger.js         # ledger.html is generated — never hand-edit
-node personal/ledger.test.js          # expect > 623 passed, 0 failed
+node personal/ledger.test.js          # expect > 641 passed, 0 failed
 node personal/build-ledger.js --check # expect "in sync"
 ```
 
