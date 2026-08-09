@@ -847,19 +847,47 @@ setModel({years:[{year:'2025-26'}],income:[
    franked:100,unfranked:50,credit:42.86,foreign_aud:200,tax_withheld_aud:30,
    cg_discount:400,cg_other:100}]});
 D=derive();
-let LI = D.lodgment['2025-26'].income, OFF = D.lodgment['2025-26'].offsets;
-t('the Australian parts reach I13', near(LI.I13.total,192.86), LI.I13.total.toFixed(2),'192.86');
-t('the foreign part reaches I20, not I13', near(LI.I20.total,200), LI.I20.total.toFixed(2),'200.00');
-t('the franking credit is claimed as a refundable offset',
+let LG = D.lodgment['2025-26'], LI = LG.income, OFF = LG.offsets;
+// myTax takes a distribution fund by fund and derives the labels itself, so a broken-out row
+// must NOT also appear as a label total — that is the same money twice, in a shape nobody can
+// type, next to a box that invites typing it.
+t('a broken-out distribution leaves through the fund block', LG.funds.length===1,
+  LG.funds.length, 1);
+t('and not through the income labels', LI.I13===undefined && LI.I20===undefined,
+  JSON.stringify(Object.keys(LI)), 'no I13 or I20');
+const F = LG.funds[0], fld = l => (F.fields.find(x=>x[0]===l)||[])[2];
+t('13U carries the unfranked amount', near(fld('13U'),50), fld('13U'),50);
+t('13C carries the franked amount', near(fld('13C'),100), fld('13C'),100);
+t('13Q carries the franking credit', near(fld('13Q'),42.86), fld('13Q'),42.86);
+// 400 grossed up + 100 other = 500 total; net is 400/2 + 100.
+t('18H is the grossed-up total', near(fld('18H'),500), fld('18H'),500);
+t('18A is that total after the discount', near(fld('18A'),300), fld('18A'),300);
+t('20E carries the foreign income', near(fld('20E'),200), fld('20E'),200);
+t('20M repeats it rather than adding to it', near(fld('20M'),200), fld('20M'),200);
+t('20O carries the foreign tax offset', near(fld('20O'),30), fld('20O'),30);
+t('the block totals what myTax will show for the fund', near(F.shareOfIncome,650),
+  F.shareOfIncome, 650);
+// Offsets still reach the return, because they are claimed once whatever route the income took.
+t('the franking credit is still a refundable offset',
   near((OFF.find(o=>/Franking/.test(o.name))||{}).amount, 42.86),
   JSON.stringify(OFF.map(o=>o.name)), 'Franking credits');
-t('the foreign tax is claimed as a non-refundable offset',
+t('the foreign tax is still a non-refundable offset',
   near((OFF.find(o=>/Foreign/.test(o.name))||{}).amount, 30),
   JSON.stringify(OFF.map(o=>o.name)), 'Foreign income tax offset');
-// 400 discounted to 200, plus 100 taxed in full.
-t('the capital gain is discounted, not carried into income whole',
-  near(LI.I18.total,300), LI.I18.total.toFixed(2),'300.00');
-t('and it is not double counted as income', LI.I13.total < 200, LI.I13.total.toFixed(2),'no capital gain in I13');
+// The gain is real and still computed — it is just entered as the fund's 18A, not as I18.
+t('the capital gain is still worked out', near(D.cgt['2025-26'].netGain,300),
+  D.cgt['2025-26'].netGain.toFixed(2),'300.00');
+t('but I18 is not offered when nothing was sold', LI.I18===undefined,
+  JSON.stringify(Object.keys(LI)), 'no I18');
+
+// Sell something yourself and I18 returns, because now there is a label you do type into.
+setModel({years:[{year:'2025-26'}],income:[
+  {id:'d1b',type:'distribution',date:'2026-06-30',holding:'FUNDA',cg_discount:400},
+  {id:'s0',type:'disposal',date:'2026-01-10',acquired:'2020-01-01',holding:'ABC',
+   proceeds:1000,cost_base:600}]});
+D=derive();
+t('a disposal of your own brings I18 back', D.lodgment['2025-26'].income.I18!==undefined,
+  JSON.stringify(Object.keys(D.lodgment['2025-26'].income)), 'has I18');
 
 // The ordering is the whole point. Discount first would give 1000/2 - 400 = 100.
 setModel({years:[{year:'2025-26'}],income:[

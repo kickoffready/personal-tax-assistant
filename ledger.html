@@ -1132,22 +1132,25 @@ function buildLodgment(fy){
       if (num(i.credit)) add(out.income, "I11", holding + " (franking credit)", num(i.credit));
     }
     else if (i.type === "distribution") {
-      // A trust distribution is one payment made of parts that belong on different lines. The
-      // AMMA statement is what splits it; a single figure entered from a bank feed cannot.
-      // Capital gains are deliberately absent here — they go through computeCGT() so losses
-      // and the discount apply in the order the law requires.
-      if (ammaComponents(i)) {
-        if (num(i.franked))     add(out.income, "I13", holding + " (franked)", num(i.franked));
-        if (num(i.unfranked))   add(out.income, "I13", holding + " (unfranked/other)", num(i.unfranked));
-        if (num(i.credit))      add(out.income, "I13", holding + " (franking credit)", num(i.credit));
-        if (num(i.foreign_aud)) add(out.income, "I20", holding + " (foreign)", num(i.foreign_aud));
-      } else add(out.income, "I13", holding, num(i.gross_aud || i.amount));
+      // A broken-out distribution is never typed against a label: it goes into myTax fund by
+      // fund and myTax fills 13U, 18A, 20E and the rest itself. Adding it to a label here would
+      // put the same money on screen twice, in a form nobody can transcribe, and invite it to
+      // be entered twice. Those rows leave through out.funds instead.
+      //
+      // A single-figure distribution has no fund block to go to — the components it would need
+      // are exactly what it is missing — so it keeps the old label line until it is broken out.
+      if (!ammaComponents(i)) add(out.income, "I13", holding, num(i.gross_aud || i.amount));
     }
     else if (i.type === "foreign") add(out.income, "I20", holding + " (gross)", grossAud(i));
     else if (i.type === "staking" || i.type === "airdrop") add(out.income, "I24", holding + " (" + i.type + ")", num(i.gross_aud || i.amount));
   }
   const cg = derived.cgt[fy];
-  if (cg && cg.netGain > 0) add(out.income, "I18", "net capital gain (after losses and discount)", cg.netGain);
+  // Only when you disposed of something yourself. A capital gain that arrived entirely inside a
+  // fund is entered as that fund's 18A and 18H, and myTax nets it against your losses — so an
+  // I18 line here would be the same gain a second time, already netted, with nowhere to go.
+  const ownDisposal = M.income.some(i => i.type === "disposal" && fyOf(i.date) === fy);
+  if (cg && cg.netGain > 0 && ownDisposal)
+    add(out.income, "I18", "net capital gain (after losses and discount)", cg.netGain);
 
   // balancing adjustments on disposal
   const bal = derived.dep.filter(r => r.year === fy && r.balancing);
@@ -1170,9 +1173,58 @@ function buildLodgment(fy){
     .reduce((s,i) => s + num(i.tax_withheld_aud), 0);
   if (fito > 0.005) out.offsets.push({ name:"Foreign income tax offset", amount:fito, refundable:false,
     note:"Non-refundable — reduces tax payable to zero, no further. Claim it, or the withholding is simply lost." });
+  const tfnw = M.income.filter(i => fyOf(i.date) === fy)
+    .reduce((s,i) => s + num(i.tfn_withheld), 0);
+  if (tfnw > 0.005) out.offsets.push({ name:"TFN amounts withheld", amount:tfnw, refundable:true,
+    note:"Refundable — withheld only because a TFN was not quoted, and returned in full once it is declared." });
 
+  out.funds = fundDistributions(fy);
   return out;
 }
+// myTax does not ask for a trust distribution by return label. It asks for it fund by fund, in
+// its own field order, and works the labels out itself — so a screen showing "13U $0.45" across
+// two funds is not something anyone can type anywhere. This is the shape of one Managed fund
+// distributions block, and the order is the form's, not ours.
+//
+// 18A is derived rather than stored. Every AMMA reconciles it as the discount-method amount
+// halved plus the other-method amount in full, and the two statements this was built against
+// both do; storing a figure the components already determine invites the two to disagree.
+function fundRow(i){
+  const cgDisc = num(i.cg_discount), cgOther = num(i.cg_other);
+  const foreign = num(i.foreign_aud);
+  return {
+    id: i.id,
+    name: i.holding || "unnamed fund",
+    ref: i.ref || "",
+    holders: num(i.holders) || 1,
+    fields: [
+      ["13U", "Total non-primary production income", num(i.unfranked)],
+      ["13C", "Total franked distribution", num(i.franked)],
+      ["13Y", "Total other deductions relating to non-primary production", num(i.other_deductions)],
+      ["13Q", "Total franking credits", num(i.credit)],
+      ["13R", "Total TFN amounts withheld", num(i.tfn_withheld)],
+      ["18A", "Total net capital gain", cgDisc / 2 + cgOther],
+      ["18H", "Total current year capital gains", cgDisc + cgOther],
+      ["", "Capital gains - discount method", cgDisc],
+      ["", "Capital gains - other method", cgOther],
+      ["20E", "Total assessable foreign income", foreign],
+      ["20M", "Total other foreign income", foreign],
+      ["20O", "Total foreign income tax offset", num(i.tax_withheld_aud)],
+      ["24V", "Total other income – category 4", num(i.other_income_cat4)]
+    ],
+    // What myTax shows on the fund's collapsed summary row, so a block can be checked at a
+    // glance against the screen it is being typed into.
+    shareOfIncome: num(i.unfranked) + num(i.franked) + cgDisc / 2 + cgOther + foreign
+                   + num(i.other_income_cat4) - num(i.other_deductions),
+    shareOfCredits: num(i.credit) + num(i.tfn_withheld)
+  };
+}
+function fundDistributions(fy){
+  return M.income.filter(i => i.type === "distribution" && fyOf(i.date) === fy && ammaComponents(i))
+    .sort((a,b) => (a.holding||"").localeCompare(b.holding||""))
+    .map(fundRow);
+}
+
 // Whether a distribution has been broken out from its AMMA statement. The single-figure form
 // stays valid — files written before this existed still lodge the same numbers — so the two
 // forms have to be told apart in one named place rather than at each site that reads them.
@@ -1397,7 +1449,8 @@ function setField(coll, id, field, value){
   }
   // amit_cost_base_net is the only one of these that is meaningfully negative: an AMIT excess
   // reduces the cost base. num() must not be allowed to flatten that sign.
-  else if (["amount","effective_life","proceeds","cost_base","gross_foreign","fx_rate","tax_withheld_aud","franked","unfranked","credit","gross_aud","disposal_proceeds","work_pct","foreign_aud","cg_discount","cg_other","amit_cost_base_net"].includes(field))
+  else if (["amount","effective_life","proceeds","cost_base","gross_foreign","fx_rate","tax_withheld_aud","franked","unfranked","credit","gross_aud","disposal_proceeds","work_pct","foreign_aud","cg_discount","cg_other","amit_cost_base_net",
+              "tfn_withheld","other_deductions","other_income_cat4","holders"].includes(field))
     row[field] = num(value);
   else row[field] = value;
   if (field === "treatment") row.treatment_locked = true;
@@ -1783,9 +1836,13 @@ function renderLodgment(){
       <span><b>Total deductions</b> · worth about ${money(totalDed*rate)} at ${pct(rate)}</span>
       <span class="lodge-amt">${money(totalDed)}</span></div>` : ""}
 
+    ${renderFundBlocks(L.funds || [])}
+
     <h3>Income</h3>
     ${incKeys.length ? incKeys.map(k => rowHTML(k, INCOME_LABELS[k], L.income[k])).join("")
-      : '<div class="panel empty">No investment income recorded for this year.</div>'}
+      : `<div class="panel empty">${(L.funds||[]).length
+          ? "Nothing outside the fund distributions above."
+          : "No investment income recorded for this year."}</div>`}
 
     ${(L.offsets && L.offsets.length) ? `<h3>Offsets</h3>
       <p class="sub">Not deductions. These reduce tax directly rather than reducing income, and the two here behave differently.</p>
@@ -1796,6 +1853,37 @@ function renderLodgment(){
     ${renderCGTsummary()}
     <div class="note aside"><b>Before you transcribe</b>
       Check pre-fill is complete first — salary, bank interest and most dividends arrive automatically and should not be typed in from here. Use these totals for the labels pre-fill cannot populate.</div>`;
+}
+
+// One block per fund, laid out in the order myTax asks, because that is the order you type in.
+// The labels are shown but they are not the unit of entry: myTax derives them from what you put
+// in the fund's block, which is why these figures appear here and not among the label rows.
+function renderFundBlocks(funds){
+  if (!funds.length) return "";
+  return `<h3>Managed fund distributions</h3>
+    <p class="sub">myTax ▸ Income ▸ Managed fund distributions. Add one entry per fund and type these
+    figures into it — myTax fills 13U, 18A, 20E and the rest of the labels itself. A zero can be
+    left blank except where the form marks a field required.</p>
+    ${funds.map(f => `<div class="lodge-row open">
+      <div class="lodge-head">
+        <span class="lodge-name"><b>${esc(f.name)}</b></span>
+        <span class="lodge-amt">${money(f.shareOfIncome)}</span>
+      </div>
+      <div class="lodge-body">
+        <p class="sub" style="margin:8px 0 6px">Fund name <b>${esc(f.name)}</b> ·
+          account holders <b>${f.holders}</b>${f.ref ? " · reference " + esc(f.ref) : ""}.
+          myTax should show this fund's summary row as
+          <b>${money(f.shareOfIncome)}</b> income and <b>${money(f.shareOfCredits)}</b> credits —
+          if it does not, a field below went in wrong.</p>
+        <ul>${f.fields.map(([lbl,name,amt]) => `<li${amt ? "" : ' style="opacity:.55"'}>
+          <span>${lbl ? `<b>${lbl}.</b> ` : ""}${esc(name)}</span>
+          <span>${money(amt)} <button class="tiny" onclick="copyVal(${amt.toFixed(2)})">copy</button></span></li>`).join("")}</ul>
+      </div>
+    </div>`).join("")}
+    <div class="note aside"><b>Only managed funds belong in that section</b>
+      A dividend from a company you hold directly — including a foreign one — is entered under
+      Dividends or Other foreign income instead. myTax says so on the screen, and putting it in a
+      fund block would report it as trust income you never received.</div>`;
 }
 
 function renderCGTsummary(){
@@ -2187,6 +2275,11 @@ function distributionDetail(i){
       ${f("cg_discount","Capital gain — discount method, GROSSED UP",
           "Double the discounted figure on the statement. The 50% comes off after your losses, not before.")}
       ${f("cg_other","Capital gain — other method","Not eligible for the discount")}
+    </div>
+    <div class="formrow" style="margin:0 0 10px">
+      ${f("tfn_withheld","TFN amounts withheld (13R)","Refundable once your TFN is quoted")}
+      ${f("other_deductions","Other deductions, non-primary production (13Y)","")}
+      ${f("other_income_cat4","Other income — category 4 (24V)","")}
     </div>
     <div class="formrow" style="margin:0">
       ${f("amit_cost_base_net","AMIT cost base net amount",
