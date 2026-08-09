@@ -181,7 +181,7 @@
           <tr><td class="k">evidence</td><td class="k">evidence/2026/…</td><td>Relative path to the invoice file.</td></tr>
           <tr><td class="k">treatment</td><td class="k">schedule</td><td><code>immediate</code> · <code>pool</code> · <code>schedule</code> — see section 04.</td></tr>
           <tr><td class="k">effective_life</td><td class="k">2</td><td>Years. Blank for immediate and pooled assets.</td></tr>
-          <tr><td class="k">method</td><td class="k">prime_cost</td><td>Fixed at acquisition. Changing it mid-life is a common error.</td></tr>
+          <tr><td class="k">method</td><td class="k">diminishing</td><td><code>diminishing</code> · <code>prime_cost</code>. Diminishing value is the default for every scheduled asset; a row created before that default was set keeps the <code>prime_cost</code> it has been claiming. Fixed at acquisition — changing it mid-life is a common error.</td></tr>
           <tr><td class="k">work_pct</td><td class="k">0.70</td><td>With a note or diary backing it. Can change year to year.</td></tr>
           <tr><td class="k">status</td><td class="k">in_use</td><td><code>in_use</code> · <code>disposed</code> · <code>scrapped</code>.</td></tr>
           <tr><td class="k">disposal_date</td><td>—</td><td>Triggers a balancing adjustment.</td></tr>
@@ -201,7 +201,7 @@
           <tr><td class="k">year</td><td>Income year, e.g. <code>2025-26</code>.</td></tr>
           <tr><td class="k">opening</td><td>Prior year's closing. First year = cost.</td></tr>
           <tr><td class="k">days_held</td><td>365 in a full year; part-year in the year of purchase or disposal.</td></tr>
-          <tr><td class="k">decline</td><td><code>cost × (days_held ÷ 365) × (100% ÷ effective_life)</code> for prime cost.</td></tr>
+          <tr><td class="k">decline</td><td><code>opening × (days_held ÷ 365) × (200% ÷ effective_life)</code> for diminishing value, the default; <code>cost × (days_held ÷ 365) × (100% ÷ effective_life)</code> for prime cost. Note which value each one reads — that is the whole difference between them.</td></tr>
           <tr><td class="k">work_pct</td><td>Copied from the register for that year.</td></tr>
           <tr><td class="k">deductible</td><td><code>decline × work_pct</code>. This is the number that goes on the return.</td></tr>
           <tr><td class="k">closing</td><td><code>opening − decline</code>. Carries to next year's opening.</td></tr>
@@ -339,7 +339,7 @@
           <td class="k">$1,000 or more</td>
           <td>Individual schedule over effective life</td>
           <td class="lbl">D5</td>
-          <td>Prime cost or diminishing value</td>
+          <td>Diminishing value by default, or prime cost</td>
         </tr>
       </tbody>
     </table>

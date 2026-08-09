@@ -418,6 +418,18 @@ const POOL_DISPLAY_YEARS = 5;
 // by sets or substantially identical items that together cross the line.
 // ato.gov.au > deductions > assets costing more than $300
 const IMMEDIATE_THRESHOLD = 300, POOL_CEILING = 1000;
+
+// Either method is permitted and the choice is fixed once it is made, so what the ledger picks
+// when nobody has chosen is a real decision rather than a fallback. It is diminishing value,
+// because a low-cost asset now stays on an individual schedule until a pool is deliberately
+// opened, and it should not claim more slowly than the pool it declined — which itself runs at
+// 37.5% diminishing. Diminishing reads the OPENING adjustable value where prime cost reads the
+// original cost, so a first year claims exactly twice what prime cost does on the same cost,
+// days held and work-use share.
+const DEP_METHOD_DEFAULT = "diminishing";
+// The one place a missing method resolves. Everything that reads a method goes through here so
+// an unset field can never mean prime cost by accident, the way an unnamed `else` branch did.
+function depreciationMethod(a){ return (a && a.method) || DEP_METHOD_DEFAULT; }
 const AUTOSAVE_KEY = "tax-ledger-autosave-v1";
 const UI_KEY = "tax-ledger-ui-v1";     // which tab / year you were on, not part of the record
 // This browser-only acknowledgement is deliberately separate from the ledger record. Bump the
@@ -470,7 +482,7 @@ function assetLabel(a){
 }
 
 function emptyModel() {
-  return { schema:5, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
+  return { schema:6, created: todayISO(), years:[], assets:[], expenses:[], income:[] };
 }
 
 // schema 1 stored work use as a fraction (0.7). schema 2 stores it as a percentage (70),
@@ -486,8 +498,11 @@ function emptyModel() {
 // ASSET keeps one item_supplier identity. Schema 5 joins the old asset description and
 // supplier without losing either value; helpers split it only where a calculation needs the
 // item or a correction needs the supplier. Old files still load: convert once, on the way in.
-function migrate(m){
+// Schema 6 writes an asset's depreciation method down instead of letting an unset field mean
+// prime cost. See the pin below for why an existing row keeps prime cost while a new one does not.
+function migrate(m, opts){
   if (!m) return m;
+  opts = opts || {};
   const v = num(m.schema) || 1;
   if (v < 2) {
     const up = x => num(x) * 100;
@@ -519,7 +534,20 @@ function migrate(m){
     delete a.description;
     delete a.supplier;
   });
-  m.schema = 5;
+  // Before schema 6 a scheduled asset with no method fell through to prime cost, so that is what
+  // every row already in a ledger has been claiming. The default is now diminishing, and a
+  // default that restates a figure in a year already lodged is not a default, it is an
+  // amendment — so an existing row is pinned to the method it has actually been using, visibly,
+  // in its own record. Changing it afterwards remains one selection in Details.
+  //
+  // Rows arriving by IMPORT are exempt: they are new to this ledger, have never produced a
+  // figure here, and applyImport() defaults them at the current rule. The one gap is a
+  // PRE-schema-6 ledger file merged with Import rather than opened with Open — its assets are
+  // treated as new and take diminishing. A ledger saved after this change carries an explicit
+  // method on every row, so the gap closes itself on the first save.
+  if (v < 6 && !opts.imported)
+    (m.assets || []).forEach(a => { if (!a.method) a.method = "prime_cost"; });
+  m.schema = 6;
   return m;
 }
 let M = emptyModel();
@@ -945,7 +973,7 @@ function derive(){
       // noise in the trace and would push the retention date out by a year.
       if (opening <= 0.005 && !(a.disposal_date && fyOf(a.disposal_date) === fy)) continue;
       let decline;
-      if (a.method === "diminishing") decline = opening * (days/365) * (2/life);
+      if (depreciationMethod(a) === "diminishing") decline = opening * (days/365) * (2/life);
       else decline = cost * (days/365) * (1/life);
       decline = Math.min(decline, opening);
       const closing = opening - decline;
@@ -1581,18 +1609,25 @@ function moveWarnings(fy){
 
 // What the row will claim once it lands, so the confirmation can say so. Days-apportioned
 // depreciation is not guessed at here; a scheduled asset is described by its life instead.
-function claimPreview(cost, wp, fy, desc, life, date){
+// `method` is passed in rather than assumed: a row moving INTO Assets is new and takes the
+// default, but an existing asset moving OUT may be an older row pinned to prime cost, and the
+// sentence would misstate its figure by half.
+function claimPreview(cost, wp, fy, desc, life, date, method){
   const t = treatmentFor(cost), full = num(cost) * wpFrac(wp);
   if (t === "immediate") return "written off at once, claiming " + money(full) + " at D5 in FY " + fyLabel(fy) + ".";
   if (t === "pool") return "allocated to the low-value pool, claiming " + money(full * POOL_FIRST_YEAR) +
     " at D6 in FY " + fyLabel(fy) + ", then 37.5% of the balance each year after.";
   // The other two branches name the figure you would claim. A schedule has to as well — it is
   // now the usual answer for a low-cost asset, and "apportioned by the days it was held" is not
-  // something anyone can turn into a number while deciding whether to press the button.
+  // something anyone can turn into a number while deciding whether to press the button. The
+  // method has to be named beside the number, because the same asset on the other method claims
+  // half this: in the first year the opening value is the cost, so diminishing is exactly double.
   const years = num(life) || suggestLife(desc);
   const days = date ? daysHeldIn(fy, date, null) : 0;
-  const firstYear = years && days ? full * (days / 365) / years : 0;
-  return "depreciated at D5 over an effective life of " + years + " years from " + fyLabel(fy)
+  const dv = (method || DEP_METHOD_DEFAULT) === "diminishing";
+  const firstYear = years && days ? full * (days / 365) * (dv ? 2 : 1) / years : 0;
+  return "depreciated at D5 by " + (dv ? "diminishing value" : "prime cost")
+    + " over an effective life of " + years + " years from " + fyLabel(fy)
     + (firstYear > 0.005 ? ", claiming " + money(firstYear) + " in the first year" : "")
     + ", apportioned by the days it was held.";
 }
@@ -1613,6 +1648,9 @@ function asAssetRow(e){
     item_supplier: joinAssetIdentity(item, supplier),
     purchase_date: e.date, start_date: e.date, cost,
     treatment: treatmentFor(cost),
+    // Set fresh on arrival for the same reason treatment is: an expense has no method to carry,
+    // and leaving it unset is what silently gave a moved row prime cost.
+    method: DEP_METHOD_DEFAULT,
     // Never omitted: workPctFor() reads a missing work_pct as 100%, the one default in
     // the ledger that errs toward over-claiming.
     work_pct: { [fy]: e.work_pct === undefined ? 100 : num(e.work_pct) },
@@ -1646,7 +1684,8 @@ function sendToAssets(id){
   const lines = ["Move “" + (desc || "this charge") + "” to Assets?", "",
     "As an expense it claims " + money(cost * wpFrac(wp)) + " at " + (e.label || "D5") +
       " in FY " + fyLabel(fy) + ".",
-    "As an asset costing " + money(cost) + " it will be " + claimPreview(cost, wp, fy, desc, null, e.date)];
+    "As an asset costing " + money(cost) + " it will be " +
+      claimPreview(cost, wp, fy, desc, null, e.date, DEP_METHOD_DEFAULT)];
   const warn = moveWarnings(fy);
   if (warn.length) lines.push("", warn.join("\n"));
   if (!confirm(lines.join("\n"))) return;
@@ -1729,7 +1768,8 @@ function sendToExpenses(assetId){
   }
 
   const lines = ["Move “" + identity + "” to Expenses?", "",
-    "As an asset costing " + money(cost) + " it is " + claimPreview(cost, wp, fy, item, a.effective_life, assetStartDate(a)),
+    "As an asset costing " + money(cost) + " it is " +
+      claimPreview(cost, wp, fy, item, a.effective_life, assetStartDate(a), depreciationMethod(a)),
     "As an expense it claims " + money(cost * wpFrac(wp)) + " in full, in FY " + fyLabel(fy) + "."];
   if (a.treatment === "pool") {
     // derive() rebuilds the pool from the original costs on every load, so taking an asset
@@ -2082,8 +2122,8 @@ function assetDetail(a){
       ${a.treatment==="schedule" ? `<div class="fld"><label>Effective life (years)</label><input class="n" type="number" step="0.1" min="0.1"
         value="${num(a.effective_life)||suggestLife(assetItemName(a))}" onchange="setField('assets','${a.asset_id}','effective_life',this.value)"></div>
       <div class="fld"><label>Depreciation method</label><select onchange="setField('assets','${a.asset_id}','method',this.value)">
-        <option value="prime_cost"${a.method!=="diminishing"?" selected":""}>Prime cost</option>
-        <option value="diminishing"${a.method==="diminishing"?" selected":""}>Diminishing value</option></select></div>` : ""}
+        <option value="diminishing"${depreciationMethod(a)==="diminishing"?" selected":""}>Diminishing value</option>
+        <option value="prime_cost"${depreciationMethod(a)!=="diminishing"?" selected":""}>Prime cost</option></select></div>` : ""}
     </div>
     <div class="formrow" style="margin:0">
       <div class="fld" style="flex:1;min-width:220px"><label>Basis for the Deductible %</label>
@@ -2582,8 +2622,11 @@ function previewAssetEntry(){
   let claim = cost * pctValue / 100;
   if (treatment === "pool") claim *= POOL_FIRST_YEAR;
   else if (treatment === "schedule") {
+    // A new asset takes DEP_METHOD_DEFAULT, so the preview has to use the same rate the row will
+    // actually be created with — 2/life, not the 1/life prime cost this used to assume.
     const life = suggestLife(item);
-    claim = cost * (daysHeldIn(fy, date, null) / 365) * (1 / life) * pctValue / 100;
+    const rate = DEP_METHOD_DEFAULT === "diminishing" ? 2 : 1;
+    claim = cost * (daysHeldIn(fy, date, null) / 365) * (rate / life) * pctValue / 100;
   }
   claimOut.textContent = money(claim);
 }
@@ -2602,7 +2645,7 @@ function addAsset(){
   const identity = splitAssetIdentity(itemSupplier);
   M.assets.push({ asset_id: allocateAssetId(fyOf(date)), item_supplier: itemSupplier,
     purchase_date: date, start_date: date, cost, treatment: treatmentFor(cost),
-    effective_life: suggestLife(identity.item), method: "prime_cost",
+    effective_life: suggestLife(identity.item), method: DEP_METHOD_DEFAULT,
     work_pct: { [fyOf(date)]: deductiblePct },
     category: $("#a-cat").value || suggestCategory(identity.supplier, identity.item, "assets"), basis: "" });
   entryNotice = { view:"assets", text:"Added “" + itemSupplier + "”; first claim is in FY " + fyLabel(fyOf(date)) + "." };
@@ -2804,7 +2847,7 @@ function rowKeys(r, kind){
 }
 
 function planImport(parsed){
-  const incoming = migrate(Object.assign(emptyModel(), parsed));
+  const incoming = migrate(Object.assign(emptyModel(), parsed), { imported: true });
   const plan = { add:{assets:[],expenses:[],income:[]}, skip:{assets:[],expenses:[],income:[]}, years:[], cross:[] };
   const ix = supplierIndex();
   // Converter identities are checked against the WHOLE ledger, not one collection. A row
@@ -2866,6 +2909,9 @@ function applyImport(plan, from){
     a.asset_id = allocateAssetId(fyOf(a.purchase_date), takenAssets);
     takenAssets.add(a.asset_id);
     if (!a.treatment) a.treatment = treatmentFor(a.cost);
+    // A converter never emits a method, and a row arriving here has never produced a figure in
+    // this ledger, so it takes the current default rather than the migration's pin.
+    if (!a.method) a.method = DEP_METHOD_DEFAULT;
     M.assets.push(a);
   }
   for (const y of plan.years) M.years.push(y);   // never overwrites a year you have set up
@@ -3003,7 +3049,7 @@ function exportCSV(which){
   const fy = activeYear;
   const sets = {
     assets: [["asset_id","item_supplier","purchase_date","start_date","cost","treatment","effective_life","method","income_use_pct","disposal_date","disposal_proceeds","keep_until"],
-      ...M.assets.map(a => [a.asset_id,assetIdentity(a),a.purchase_date,assetStartDate(a),a.cost,a.treatment,a.effective_life,a.method,workPctFor(a,fy),a.disposal_date,a.disposal_proceeds,derived.keep[a.asset_id]])],
+      ...M.assets.map(a => [a.asset_id,assetIdentity(a),a.purchase_date,assetStartDate(a),a.cost,a.treatment,a.effective_life,depreciationMethod(a),workPctFor(a,fy),a.disposal_date,a.disposal_proceeds,derived.keep[a.asset_id]])],
     depreciation: [["asset_id","year","opening","days_held","decline","work_pct","deductible","closing","label"],
       ...derived.dep.map(r => [r.asset_id,r.year,r.opening.toFixed(2),r.days_held,r.decline.toFixed(2),r.work_pct,r.deductible.toFixed(2),r.closing.toFixed(2),r.label])],
     expenses: [["date","supplier","amount","work_pct","claimed","label","basis"],

@@ -38,7 +38,7 @@ ledger.json  (the record — lives in cloud storage alongside the workbook)
 ledger-FY2025-26-{assets,expenses,income,lodgment}.csv  (archive)
 ```
 
-### Data model (`schema: 5`)
+### Data model (`schema: 6`)
 
 Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
 
@@ -56,7 +56,7 @@ Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §
 
 ### Calculation engine
 
-- **Prime cost**: `cost × (days from first use ÷ 365) × (100% ÷ effective_life)`; **diminishing value** as the alternative, fixed when chosen.
+- **Diminishing value**, the default for every scheduled asset: `opening × (days from first use ÷ 365) × (200% ÷ effective_life)`; **prime cost** as the alternative, `cost × (days ÷ 365) × (100% ÷ effective_life)`. Fixed once chosen. A row created before the default was set keeps the prime cost it has been claiming — schema 6 writes it down rather than restating a lodged figure.
 - **Treatment suggested from cost, not deductible percentage**: ≤$300 immediate-deduction candidate (D5) · under $1,000 pool-eligible (D6) · otherwise an individual schedule (D5). The register explains that cost alone does not prove the conditions, and the suggestion remains editable in Details.
 - **Low-value pool**: 18.75% in the year of allocation regardless of date, 37.5% diminishing thereafter. One taxable-use estimate is fixed at allocation. Disposal proceeds at that percentage reduce the closing balance, with any excess reported as income. Enforce the one-way rule — once a pool exists, later low-cost assets must be pooled.
 - **CGT ordering**: current-year losses (preferring non-discountable gains) → carried-forward losses oldest-first → *then* the 50% discount.
@@ -69,7 +69,7 @@ The boundary: **arithmetic and hard rules are computed; judgement stays with the
 
 | Automatic — rule or arithmetic | Suggested — visible and editable | Manual — always the user's |
 |---|---|---|
-| Decline in value, prime cost or DV, part-year by days held | Treatment from cost; effective life from the item portion of `item_supplier` | Whether the $300 conditions are met and whether to use the pool |
+| Decline in value, DV or prime cost, part-year by days held | Treatment from cost; effective life from the item portion of `item_supplier`; method defaults to diminishing value | Whether the $300 conditions are met and whether to use the pool |
 | Opening/closing balances and roll-forward | Expense Tax purpose from supplier, then remembered per supplier | Deductible % (required explicitly for a new manual row) |
 | | | Hours worked from home |
 | Pool: 18.75% then 37.5% | | Whether an expense relates to earning income at all |

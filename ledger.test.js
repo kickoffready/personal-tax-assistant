@@ -165,7 +165,7 @@ t('an exact year still wins', workPctFor({work_pct:{'2024-25':50,'2026-27':80}},
 console.log('\\n— schema 1 files still load');
 let leg = migrate({schema:1, expenses:[{id:'e',amount:100,work_pct:0.7}],
   assets:[{asset_id:'A',cost:2000,work_pct:{'2024-25':0.8,'2025-26':0.5}},{asset_id:'B',cost:500,work_pct:0.25}]});
-t('schema bumped to 5', leg.schema===5, leg.schema, 5);
+t('schema bumped to 6', leg.schema===6, leg.schema, 6);
 t('expense 0.7 becomes 70', leg.expenses[0].work_pct===70, leg.expenses[0].work_pct, 70);
 t('per-year 0.8 becomes 80', leg.assets[0].work_pct['2024-25']===80, leg.assets[0].work_pct['2024-25'], 80);
 t('a scalar 0.25 becomes 25', leg.assets[1].work_pct===25, leg.assets[1].work_pct, 25);
@@ -198,7 +198,7 @@ let s5 = migrate({schema:3,
     {id:'e2',date:'2026-05-06',description:'ChatGPT',amount:30,work_pct:100,label:'D5'}],
   assets:[{asset_id:'A-1',description:'MacBook Pro',supplier:'Apple',cost:2400,
     work_pct:{'2025-26':70}}]});
-t('schema bumped to 5 from 3', s5.schema===5, s5.schema, 5);
+t('schema bumped to 6 from 3', s5.schema===6, s5.schema, 6);
 t('expense descriptions are dropped', s5.expenses.every(e => !('description' in e)),
   s5.expenses.map(e => Object.keys(e).join(',')).join(' / '), 'no descriptions');
 t('a legacy description preserves identity when supplier is blank',
@@ -321,6 +321,51 @@ t('the same asset on prime cost declines a flat fifth of cost', (() => {
 M.assets[0].method='diminishing'; DV=derive();
 t('decline never exceeds what is left to write off',
   DV.dep.every(r => r.decline <= r.opening + 0.005), 'capped', 'capped');
+
+// Which method an unset field means is a decision, not a fallback. It used to be prime cost by
+// accident — the unnamed else branch of one if — and prime cost is the slower of the two, so a
+// low-cost asset kept out of the pool claimed less than the pool it declined, which itself runs
+// at 37.5% diminishing. The default is now diminishing, held right up until the asset is
+// switched into the pool. What a default must never do is restate a figure in a year already
+// lodged, so schema 6 pins every row that predates the choice to the prime cost it has in fact
+// been claiming, in its own record where it is visible and editable.
+console.log('\\n— diminishing value is the default, and it is never applied backwards');
+t('an unset method resolves to diminishing', depreciationMethod({})==='diminishing',
+  depreciationMethod({}), 'diminishing');
+t('an explicit prime cost is left alone', depreciationMethod({method:'prime_cost'})==='prime_cost',
+  depreciationMethod({method:'prime_cost'}), 'prime_cost');
+t('a new ledger is schema 6', emptyModel().schema===6, emptyModel().schema, 6);
+
+setModel({years:[{year:'2025-26'}], assets:[{asset_id:'A-NM',item_supplier:'Dock — Officeworks',
+  purchase_date:'2025-07-01',cost:1000,treatment:'schedule',effective_life:4,work_pct:{'2025-26':100}}]});
+t('a scheduled asset with no method declines at 2/life, not 1/life',
+  near(derive().dep[0].decline, 500), derive().dep[0].decline.toFixed(2), '500.00, not 250.00');
+
+// The pin is the whole reason this is safe to change. A schema 5 file has been claiming prime
+// cost, and reopening it must produce the same numbers it produced yesterday.
+const pinned = migrate({schema:5, assets:[{asset_id:'A-OLD',item_supplier:'Laptop — Dell',
+  purchase_date:'2024-07-01',cost:3000,treatment:'schedule',effective_life:3,work_pct:{'2024-25':100}}]});
+t('an existing row is pinned to prime cost on the way in', pinned.assets[0].method==='prime_cost',
+  pinned.assets[0].method, 'prime_cost');
+setModel({years:[{year:'2024-25'}], assets:pinned.assets});
+t('so its figure does not move', near(derive().dep[0].decline, 1000),
+  derive().dep[0].decline.toFixed(2), '1000.00, not 2000.00');
+t('a file already at schema 6 is not pinned again',
+  migrate({schema:6, assets:[{asset_id:'A-6',cost:900,treatment:'schedule'}]}).assets[0].method===undefined,
+  migrate({schema:6, assets:[{asset_id:'A-6',cost:900,treatment:'schedule'}]}).assets[0].method, undefined);
+
+// An imported row is new HERE. It has never produced a figure in this ledger, so there is
+// nothing to preserve and it takes the current default rather than the migration's pin —
+// which matters because a converter never emits a method at all.
+setModel({years:[{year:'2025-26'}], assets:[]});
+activeYear='2025-26';
+applyImport(planImport({schema:5, assets:[{item_supplier:'Dock — Officeworks',
+  source:'gmail',source_ref:'dv1',purchase_date:'2025-07-01',cost:1200,work_pct:{'2025-26':100}}]}));
+t('an imported asset takes the default, not the pin', M.assets[0].method==='diminishing',
+  M.assets[0].method, 'diminishing');
+t('a row moved from Expenses sets it fresh, like treatment',
+  asAssetRow({id:'e',date:'2025-07-01',supplier:'Dell',amount:900,work_pct:100}).method==='diminishing',
+  asAssetRow({id:'e',date:'2025-07-01',supplier:'Dell',amount:900,work_pct:100}).method, 'diminishing');
 
 // Selling a pooled asset used to do nothing at all: the sale was enterable, accepted and
 // ignored, so the pool kept deducting on a balance the proceeds should have reduced and the
@@ -1878,10 +1923,14 @@ vm.runInContext(DOCK + `
 t('as an expense it claims its whole cost at D5',
   near(vm.runInContext('d5before', claim), 310.32), vm.runInContext('d5before', claim), 310.32);
 // With no pool open the dock arrives on an individual schedule: a 3-year life suggested from
-// the item, apportioned from 1 August. The point of the move is unchanged — a thing stops
-// claiming its whole cost in one year — only the route it takes to get there.
+// the item, apportioned from 1 August, at the default diminishing value. The point of the move
+// is unchanged — a thing stops claiming its whole cost in one year — only the route it takes to
+// get there. In a first year the opening value IS the cost, so this is exactly double what the
+// same move produced under prime cost — 94.6533 becomes 189.3066 — and that doubling is what the
+// figure checks. It displays as $189.31: the doubled figure rounds up, where doubling the
+// displayed $94.65 would not.
 t('as a scheduled asset it depreciates instead',
-  near(vm.runInContext('d5after', claim), 94.65), vm.runInContext('d5after', claim).toFixed(2), 94.65);
+  near(vm.runInContext('d5after', claim), 189.31), vm.runInContext('d5after', claim).toFixed(2), 189.31);
 t('so the whole cost is no longer claimed this year',
   vm.runInContext('d5after', claim) < 310.32, vm.runInContext('d5after', claim).toFixed(2), 'well under 310.32');
 t('and it is not in the pool, which was never opened',
@@ -1891,7 +1940,12 @@ t('and it is not in the pool, which was never opened',
 t('the confirmation names what is claimed today',
   dup.CONFIRMED.join(" ").indexOf("$310.32") !== -1, dup.CONFIRMED.join(" ").slice(0,80), 'mentions $310.32');
 t('and what will be claimed instead',
-  dup.CONFIRMED.join(" ").indexOf("$94.65") !== -1, dup.CONFIRMED.join(" ").slice(0,120), 'mentions $94.65');
+  dup.CONFIRMED.join(" ").indexOf("$189.31") !== -1, dup.CONFIRMED.join(" ").slice(0,120), 'mentions $189.31');
+// A figure without its method is half a fact: the same asset on prime cost claims $94.65, and
+// the confirmation is the only place the choice is visible before the row lands.
+t('and names the method that produced it',
+  dup.CONFIRMED.join(" ").indexOf("diminishing value") !== -1,
+  dup.CONFIRMED.join(" ").slice(0,120), 'mentions diminishing value');
 
 // The pool route still exists and still has to be right — it is just no longer the default.
 const intoPool = mv();

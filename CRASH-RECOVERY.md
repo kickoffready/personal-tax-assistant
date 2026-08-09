@@ -26,8 +26,8 @@ and a store that persists across boots to simulate a reload. This is stricter th
 | Path | Result |
 | --- | --- |
 | Save → reload, normal draft | Rows, `recoveredAt`, `dirty`, banner, restored tab, restored year and lock all return |
-| Legacy schema 1, 3, 4 autosaves | Migrate cleanly |
-| `personal/ledger.test.js` | 479 passed, 0 failed |
+| Legacy schema 1, 3, 4, 5 autosaves | Migrate cleanly |
+| `personal/ledger.test.js` | 623 passed, 0 failed |
 | `node personal/build-ledger.js --check` | in sync |
 | **Malformed draft** | **Every reload throws. Blank page, no banner, no error, no way out.** |
 
@@ -148,7 +148,7 @@ lock-survives-a-reload test passes only because the assignments happen before th
   schemas still migrate.
 
 ```
-node personal/ledger.test.js          # expect > 479 passed, 0 failed
+node personal/ledger.test.js          # expect > 623 passed, 0 failed
 node personal/build-ledger.js --check # expect "in sync"
 ```
 

@@ -58,7 +58,7 @@ PayPal issuing an invoice, and only then is it the issuer.
 | `basis` | no | Why this row exists and what a human still has to decide. |
 | `evidence` | no | A link or path back to the original document. |
 
-Plus the file wrapper: `{ "schema": 5, "years": [], "assets": [], "expenses": [], "income": [] }`.
+Plus the file wrapper: `{ "schema": 6, "years": [], "assets": [], "expenses": [], "income": [] }`.
 Older schema files still migrate when opened, but a new converter emits the current shape.
 
 An **asset** row is shaped differently and is described under *Assets or expenses* below.
@@ -197,6 +197,7 @@ it back. Guess, mark your reasoning in `basis`, and let the person with the rece
 | `basis` | no | As for an expense. |
 | `treatment` | **never** | Derived from cost. A supplied value **is** honoured — the ledger fills it only when absent, it does not strip it — so emitting one overrules the $300 and $1,000 tests. An integrity check flags a treatment that contradicts the cost, but by then it is in the file. This one is trusted rather than enforced, because Import also merges hand-classified ledger files and discarding their treatment would undo a real decision. |
 | `effective_life` | no | Omit unless the document states it; the ledger falls back to the item portion of `item_supplier`. |
+| `method` | **never** | The depreciation method. A receipt cannot know it — it is the taxpayer's choice, not a property of the purchase. The ledger fills it on arrival with the current default, **diminishing value**, and it is one selection to change in Details. Unlike `treatment`, an imported row is always treated as new here: the schema 6 migration that pins pre-existing rows to `prime_cost` deliberately does not apply to an import, because a row arriving has never produced a figure in this ledger. |
 | `asset_id` | **never** | Discarded and reallocated on import, always — supplying one changes nothing. An id minted elsewhere promises nothing about the year it encodes or the ids this ledger hands out next. Identity across imports is `source` + `source_ref`. |
 
 An item-only value is accepted when a source genuinely cannot name the supplier, but it is
