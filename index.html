@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal Tax Assistant — a ledger for an Australian individual return</title>
+<meta name="description" content="A single-file ledger for an Australian individual tax return. Runs entirely in your browser; the file you save is the record.">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  :root {
+    --paper:#f2f4f2; --surface:#fbfcfa; --surface-2:#e8ebe7;
+    --ink:#111917; --muted:#5b6a65; --faint:#8a9691; --rule:#d4d9d2;
+    --accent:#0d5a52; --accent-soft:#dfeae6;
+    --warn:#8f3340; --warn-soft:#f5e5e6;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper:#0c1110; --surface:#141a19; --surface-2:#1b2321;
+      --ink:#e6ebe8; --muted:#8fa09b; --faint:#6d7b77; --rule:#242e2c;
+      --accent:#5ec7b4; --accent-soft:#122724; --warn:#dd8089; --warn-soft:#2b1a1c; }
+  }
+
+  body { background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:760px; margin:0 auto; padding:0 20px 80px; }
+
+  header { padding:64px 0 34px; border-bottom:1px solid var(--rule); margin-bottom:34px; }
+  .kicker { font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); margin-bottom:12px; }
+  h1 { font-family:var(--serif); font-size:2.1rem; line-height:1.15; font-weight:600; margin-bottom:14px; }
+  .lede { font-size:17px; color:var(--muted); max-width:60ch; }
+
+  h2 { font-family:var(--serif); font-size:1.28rem; font-weight:600; margin:38px 0 12px; }
+  p { margin-bottom:13px; max-width:66ch; }
+  ul { margin:0 0 13px 20px; max-width:66ch; }
+  li { margin-bottom:6px; }
+  a { color:var(--accent); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2);
+    padding:1px 5px; border-radius:3px; }
+
+  .cta { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:26px 0 8px; }
+  .btn { display:inline-block; font-weight:600; font-size:15px; text-decoration:none;
+    padding:12px 22px; border-radius:5px; background:var(--accent); color:var(--paper);
+    border:1px solid var(--accent); }
+  .btn:hover { opacity:.9; }
+  .btn-2 { background:transparent; color:var(--accent); }
+  .hint { font-size:13px; color:var(--faint); }
+
+  .panel { border:1px solid var(--rule); border-radius:5px; background:var(--surface);
+    padding:16px 18px; margin:18px 0; }
+  .panel p:last-child, .panel ul:last-child { margin-bottom:0; }
+  .panel.warn { border-color:var(--warn); background:var(--warn-soft); }
+  @media (prefers-color-scheme: dark) { .panel.warn { background:var(--warn-soft); } }
+  .panel.warn b { color:var(--warn); }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0 16px; font-size:14px; }
+  td { padding:8px 10px 8px 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+  td:first-child { white-space:nowrap; width:1%; padding-right:18px; }
+  td:first-child a { font-family:var(--mono); font-size:12.5px; }
+
+  footer { margin-top:46px; padding-top:20px; border-top:1px solid var(--rule);
+    font-size:13px; color:var(--faint); }
+  footer a { color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Australian individual return</div>
+    <h1>A ledger that remembers last year</h1>
+    <p class="lede">One HTML file. It keeps the record across income years and works out what
+      belongs on each return label, so the figures you type into myTax come from something that
+      carried forward rather than something you retyped.</p>
+  </header>
+
+  <div class="cta">
+    <a class="btn" href="ledger.html">Open the ledger</a>
+    <a class="btn btn-2" href="https://github.com/kickoffready/personal-tax-assistant">Source on GitHub</a>
+  </div>
+  <p class="hint">Opens in this tab. Save the page for offline use — it has no dependencies.</p>
+
+  <div class="panel">
+    <p><b>Nothing you enter leaves your browser.</b> The page contains a single inline script and
+      makes no network requests of any kind — there is no server to send anything to. Your ledger
+      lives in a JSON file you load and save yourself, on your own machine.</p>
+  </div>
+
+  <h2>The problem it exists for</h2>
+  <p>A long-running spreadsheet with one wide sheet per financial year has a structural flaw:
+    <b>nothing persists across tabs except by retyping.</b> The mistakes that follow are not
+    carelessness, and they repeat in workbooks of this kind —</p>
+  <ul>
+    <li>assets over $300 written off on the spot, because nothing carries depreciation forward</li>
+    <li>capital losses that never reach a return, because carry-forward is manual</li>
+    <li>currency columns mixing a rate with its reciprocal</li>
+    <li>capital-gains blocks cloned between year-tabs and never refreshed</li>
+    <li>a marginal-rate multiplier that quietly omits the Medicare levy</li>
+  </ul>
+  <p>Rearranging the same year-tab layout fixes none of them.</p>
+
+  <h2>What it handles</h2>
+  <p>Decline in value on both methods, apportioned by days held, with balancing adjustments on
+    disposal · the low-value pool, including its one-way rule · capital gains with losses applied
+    before the discount, in the order that costs you least · working from home at the fixed rate ·
+    franking credits and the foreign income tax offset, both reaching the return from companies
+    <i>and</i> trusts · managed fund distributions broken out fund by fund the way myTax asks for
+    them · integrity checks that name what looks wrong and let you proceed anyway.</p>
+  <p><b>Store inputs, derive outputs.</b> Only what you typed is saved. Every schedule, balance and
+    total is recalculated on load, so a correction fixes historical years instead of leaving stale
+    numbers behind.</p>
+
+  <h2>How it was built, and what it claims</h2>
+  <table>
+    <tr><td><a href="https://github.com/kickoffready/personal-tax-assistant/blob/main/RULES.md">RULES.md</a></td>
+        <td>Every rate and rule it encodes, each with its ato.gov.au source. Start here to audit the arithmetic.</td></tr>
+    <tr><td><a href="https://github.com/kickoffready/personal-tax-assistant/blob/main/IMPORT-FORMAT.md">IMPORT-FORMAT.md</a></td>
+        <td>The contract anything feeding the ledger must satisfy, so the same purchase arriving through two channels is not claimed twice.</td></tr>
+    <tr><td><a href="https://github.com/kickoffready/personal-tax-assistant/blob/main/PLAN.md">PLAN.md</a></td>
+        <td>Why it is built this way. Written before it existed, kept as written.</td></tr>
+    <tr><td><a href="bookkeeping-runbook.html">Bookkeeping runbook</a></td>
+        <td>Record structure, retention periods, and the normative schema the tool implements.</td></tr>
+  </table>
+
+  <div class="panel warn">
+    <p><b>This is a record-keeping tool, not tax advice.</b> It is not a substitute for a registered
+      tax agent, and you remain responsible for what you lodge. Verify anything you act on against
+      <a href="https://www.ato.gov.au">ato.gov.au</a> — the sources are linked throughout.</p>
+  </div>
+
+  <footer>
+    Public domain, under the Unlicense.
+    <a href="https://github.com/kickoffready/personal-tax-assistant">github.com/kickoffready/personal-tax-assistant</a>
+  </footer>
+
+</div>
+</body>
+</html>

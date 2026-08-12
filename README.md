@@ -1,5 +1,7 @@
 # personal-tax-assistant
 
+**→ [kickoffready.github.io/personal-tax-assistant](https://kickoffready.github.io/personal-tax-assistant/)**
+
 A ledger for an Australian individual tax return. It keeps the record across income years and
 derives what goes on each return label, so the figures you transcribe into myTax come from
 something that carried forward rather than something you retyped.
