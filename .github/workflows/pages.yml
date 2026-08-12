@@ -39,8 +39,13 @@ jobs:
       - name: Check the artifact is current
         run: node build-ledger.js --check
 
-      - name: Run the test suite
-        run: node ledger.test.js
+      # All three, because the converter suites feed their output through the real planImport()
+      # from ledger.html — the contract is only proven when both sides run together.
+      - name: Run the test suites
+        run: |
+          node ledger.test.js
+          node gmail-to-ledger.test.js
+          node gmail-to-ledger-sheet.test.js
 
       - name: Inject the analytics tag
         run: node .github/inject-analytics.js

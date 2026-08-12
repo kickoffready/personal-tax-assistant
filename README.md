@@ -53,9 +53,11 @@ changes, that file changes with the constant, and a test fails until both move t
 ## Working on it
 
 ```
-node build-ledger.js            # regenerate ledger.html from ledger.js
-node build-ledger.js --check    # verify the artifact is current; writes nothing
-node ledger.test.js             # 652 passed, 0 failed
+node build-ledger.js               # regenerate ledger.html from ledger.js
+node build-ledger.js --check       # verify the artifact is current; writes nothing
+node ledger.test.js                # 653 passed, 0 failed
+node gmail-to-ledger.test.js       #  74 passed, 0 failed
+node gmail-to-ledger-sheet.test.js #  95 passed, 0 failed
 ```
 
 **`ledger.html` is generated. Never hand-edit it.** `ledger.js` is the editable source;
@@ -75,6 +77,22 @@ twice. Import merges and never overwrites; every import is previewed with counts
 is still free.
 
 The format is converter-agnostic. Anything that can emit the shape can feed it.
+
+### The Gmail converter
+
+One worked implementation of that contract ships here, as Google Apps Script:
+
+| | |
+| --- | --- |
+| `GMAIL-INTRO.md` | **Start here.** Labels and filters — how a receipt becomes something the ledger can use. |
+| `gmail-to-ledger.gs` | Gmail label → import file. `GMAIL.md` covers setup and supplier rules. |
+| `gmail-to-ledger-sheet.gs` | The same, bound to a Sheet, writing JSON plus a review tab. `GMAIL-SHEET.md`. |
+
+It lives beside the ledger rather than in its own repo for one reason: its tests feed generated
+output through the **real `planImport()`** read out of `ledger.html`, so the converter and the
+importer are tested against each other rather than against assumptions about the contract. Every
+change to the import format has historically had to touch both at once, and a boundary that a test
+already reaches across is a boundary in the wrong place.
 
 ## The rest of the documents
 
