@@ -10,9 +10,11 @@ something that carried forward rather than something you retyped.
 browser, load your ledger JSON, work, save. Your data never leaves the machine: there is no
 account, no upload and no server, and nothing here can receive your figures.
 
-The page carries a Google Analytics tag, which measures the visit and nothing else — it never reads
-the ledger. It is the only thing the page fetches, it fails harmlessly offline or from `file://`,
-and every calculation works without it.
+`ledger.html` in this repository fetches nothing — no dependencies, no analytics, no network of any
+kind. A test enforces it. The [hosted copy](https://kickoffready.github.io/personal-tax-assistant/)
+carries a Google Analytics tag, injected at deploy by `.github/workflows/pages.yml` and never
+committed, which measures the visit and never reads the ledger. Take the file from here and you
+have the untagged one.
 
 ## The problem it exists for
 

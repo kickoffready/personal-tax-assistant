@@ -5,15 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Personal Tax Assistant — a ledger for an Australian individual return</title>
 <meta name="description" content="A single-file ledger for an Australian individual tax return. Runs entirely in your browser; the file you save is the record.">
-<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-77DBRRLYT5"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-77DBRRLYT5');
-</script>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
   * { margin: 0; padding: 0; }
@@ -99,10 +90,15 @@
     <p><b>Your ledger never leaves your browser.</b> It lives in a JSON file you load and save
       yourself, on your own machine. There is no account, no upload and no server holding your
       figures — nothing in this project can receive them.</p>
-    <p>These pages do carry <b>Google Analytics</b>, which records the visit: which page, where you
-      arrived from, approximate location and device. It does not read what you type, and no part of
-      your ledger is sent to it or to anyone else. Block it if you would rather it did not — the
-      tool works identically without it, including fully offline.</p>
+    <p>This hosted site carries <b>Google Analytics</b>, which records the visit: which page, where
+      you arrived from, approximate location and device. It does not read what you type. Block it
+      if you would rather it did not — the tool works identically without it.</p>
+    <p><b>The tag is added when the site is published, not built into the tool.</b> Take
+      <a href="https://github.com/kickoffready/personal-tax-assistant/blob/main/ledger.html">ledger.html
+      from the repository</a> and you have a file that fetches nothing at all — no tracking, no
+      dependencies, working offline forever. A test enforces it. (Using your browser's <i>Save
+      page</i> on this hosted copy keeps the tag, so take it from the repository if that matters
+      to you.)</p>
   </div>
 
   <h2>The problem it exists for</h2>

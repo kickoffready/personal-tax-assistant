@@ -1,0 +1,88 @@
+# Publishes the site to GitHub Pages, adding the analytics tag on the way out.
+#
+# The tag is NOT committed. ledger.html is meant to be downloaded and kept — it is a tool for
+# working on your own records, offline, for as long as you hold them — and a file that phones
+# home every time it is opened is not that. So the repo stays clean and the hosted copy is
+# tagged here, at the last possible moment.
+#
+# The measurement ID is not a secret: it is readable in the page source of any site using it.
+# It sits in this file rather than in a repository variable so that what gets injected is
+# visible to anyone reading the workflow.
+
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. Don't cancel a running one — a half-finished deploy is worse than a
+# slightly stale site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The site is only worth publishing if the artifact matches its source and the arithmetic
+      # still holds. Both are dependency-free, so this costs seconds.
+      - name: Check the artifact is current
+        run: node build-ledger.js --check
+
+      - name: Run the test suite
+        run: node ledger.test.js
+
+      - name: Inject the analytics tag
+        run: |
+          node - <<'JS'
+          const fs = require("fs");
+          const ID = "G-77DBRRLYT5";
+          const TAG = `<!-- Google tag (gtag.js) — injected at deploy, not committed. Measures the
+     visit: page, referrer, approximate location, device. It never reads the ledger, which
+     lives in a file you load and save yourself and is sent nowhere. The copy of this page in
+     the repository carries no tag at all. -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=${ID}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', '${ID}');
+</script>
+`;
+          const pages = fs.readdirSync(".").filter(n => n.endsWith(".html"));
+          if (!pages.length) throw new Error("no HTML to publish — wrong working directory?");
+          for (const page of pages) {
+            const html = fs.readFileSync(page, "utf8");
+            // Both of these mean the repo drifted from what this workflow assumes. Failing the
+            // deploy is right: a silently untagged page reads as no traffic, and a page tagged
+            // twice double-counts every visit.
+            if (!html.includes("</head>")) throw new Error(`${page} has no </head> to inject into`);
+            if (html.includes(ID)) throw new Error(`${page} already carries the tag — it should not be committed`);
+            fs.writeFileSync(page, html.replace("</head>", TAG + "</head>"));
+            console.log("tagged " + page);
+          }
+          JS
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4

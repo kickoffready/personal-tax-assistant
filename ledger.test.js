@@ -1518,20 +1518,14 @@ t('the standalone page embeds ledger.js exactly',
 t('regenerating the page is a no-op',
   renderLedgerHtml(html, code) === normaliseNewlines(html),
   'rendered page', 'current page');
-// The page loads exactly one external script: the analytics tag, added deliberately when the
-// tool was published. The guard still matters and is narrowed rather than dropped — nothing the
-// ledger needs to CALCULATE may come off the network, or the file stops working offline and from
-// file://, which is most of what makes it a record you own. A second src= here is a regression.
-const externalScripts = html.match(/<script\s+[^>]*\bsrc=["']([^"']+)["']/gi) || [];
-t('the standalone page loads exactly one external script', externalScripts.length === 1,
-  externalScripts.length, 1);
-t('and it is the analytics tag, not a dependency',
-  /googletagmanager\.com\/gtag\/js/.test(externalScripts[0] || ''),
-  externalScripts[0] || '(none)', 'the gtag loader');
-t('the engine itself is still inlined, so it runs with no network',
-  extractGeneratedSource(html).length > 1000 &&
-    !/<script\s+[^>]*\bsrc=/i.test(extractGeneratedSource(html)),
-  'inlined', 'inlined');
+// The COMMITTED artifact fetches nothing. This is the file people download and keep, to work on
+// their own records offline for as long as they hold them, and a file that phones home every time
+// it opens is not that. The hosted copy is tagged for analytics by .github/workflows/pages.yml,
+// at deploy, which is also where a tag committed here by mistake fails the deploy loudly.
+t('the standalone page loads no external script',
+  !/<script\s+[^>]*\bsrc=/i.test(html), 'external script', 'no external script');
+t('and no analytics tag is committed',
+  !/googletagmanager|gtag\(/i.test(html), 'a tag is committed', 'injected at deploy only');
 let unsafeSourceError = '';
 try { validateSource('console.log("unsafe");\n</script>'); } catch (error) { unsafeSourceError = error.message; }
 t('the builder rejects source that can close the inline script',
