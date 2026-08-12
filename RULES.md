@@ -62,7 +62,7 @@ together, and a test is there to stop you moving only one.
 | Basis has no input | `runChecks()` | An expense `basis` is written by converters, carried by a move, and exported to CSV — never typed. Converters cannot finish every row and say why in it: the FX rate used, a refund netted inside the amount, a receipt never itemised, an issuer they could not name. Any row whose basis starts with `review` raises a warning that repeats **the reason**, not just the count, because those four want four different fixes. |
 | Financial year | `fyOf()` | 1 July to 30 June. A 30 June transaction belongs to the year ending that day. |
 | Deductible percentage is explicit | `entryPct()` / `validPct()` | New manual Assets and Expenses rows require a number from 0 to 100. Blank, malformed and out-of-range values are rejected; an intentional `0` remains 0. The ledger never turns a missing manual judgement into a 100% claim. Older and imported records keep their compatibility behavior, so opening an existing file does not rewrite its meaning. |
-| Converters route on the $300 hinge | `personal/IMPORT-FORMAT.md` | A converter chooses `assets` or `expenses`, and that choice decides *which year* the money is claimed. Below $300 both collections claim the whole amount in the same year, so the question does not arise and the row goes to `expenses`. Above $300 a **thing** goes to `assets`, and so does a row the converter **cannot classify** — a thing wrongly expensed claims its full cost this year (an over-claim, and an amendment), while a service wrongly capitalised only under-claims and is fixed by moving the row. The issuer never decides the kind: Apple bills both a cloud plan and a MacBook. |
+| Converters route on the $300 hinge | `IMPORT-FORMAT.md` | A converter chooses `assets` or `expenses`, and that choice decides *which year* the money is claimed. Below $300 both collections claim the whole amount in the same year, so the question does not arise and the row goes to `expenses`. Above $300 a **thing** goes to `assets`, and so does a row the converter **cannot classify** — a thing wrongly expensed claims its full cost this year (an over-claim, and an amendment), while a service wrongly capitalised only under-claims and is fixed by moving the row. The issuer never decides the kind: Apple bills both a cloud plan and a MacBook. |
 | Imported assets must carry `work_pct` | `workPctFor()` | An asset with no `work_pct` is read as **100%**, the only default in the ledger that errs toward over-claiming, and an import is the way it is reached — `addAsset()` always sets one, a converter may not. Asset `work_pct` is an object keyed by financial year (`{"2025-26": 0}`), unlike an expense's bare number. Converters emit `0`, as everywhere else: a parse result is not a claim decision. |
 
 ### Interface rules that are load-bearing
@@ -110,7 +110,7 @@ Three things move together:
 3. **`ledger.test.js`** — a test will already be failing. Update the expected figure only once
    you have confirmed the new value against ato.gov.au, never to make the suite green.
 
-Run `node personal/ledger.test.js` after any change. It exits non-zero on failure.
+Run `node ledger.test.js` after any change. It exits non-zero on failure.
 
 The suite is mutation-tested: breaking `WFH_FIXED_RATE`, `POOL_FIRST_YEAR` or
 `IMMEDIATE_THRESHOLD` each produces failures, so a silent rate drift is not possible.

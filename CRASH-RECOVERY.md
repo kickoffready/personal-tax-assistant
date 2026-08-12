@@ -1,11 +1,11 @@
 # Crash recovery: what it promises, and how it broke
 
 > **Status:** verified broken, fix planned, not yet implemented.
-> **Written:** 9 August 2026 against `personal/ledger.js` at commit `260a0c7`.
+> **Written:** 9 August 2026 against `ledger.js` at commit `260a0c7`.
 
 ## Context
 
-`personal/PLAN.md` settles the memory model: **the exported file is the system of record, and the
+`PLAN.md` settles the memory model: **the exported file is the system of record, and the
 browser is a calculator over it.** `localStorage` is demoted to crash-recovery autosave, labelled as
 such in the UI and never authoritative.
 
@@ -27,8 +27,8 @@ and a store that persists across boots to simulate a reload. This is stricter th
 | --- | --- |
 | Save → reload, normal draft | Rows, `recoveredAt`, `dirty`, banner, restored tab, restored year and lock all return |
 | Legacy schema 1, 3, 4, 5 autosaves | Migrate cleanly |
-| `personal/ledger.test.js` | 652 passed, 0 failed |
-| `node personal/build-ledger.js --check` | in sync |
+| `ledger.test.js` | 652 passed, 0 failed |
+| `node build-ledger.js --check` | in sync |
 | **Malformed draft** | **Every reload throws. Blank page, no banner, no error, no way out.** |
 
 So the ordinary resume path is sound. The failure path is not, and it fails permanently.
@@ -79,7 +79,7 @@ touch() threw during render: Cannot read properties of null (reading 'date')
 but the poisoned model was ALREADY persisted: 2 rows, second is null
 ```
 
-One bad row — realistically from an external converter, and `personal/gmail-to-ledger-sheet.gs` is
+One bad row — realistically from an external converter, and `gmail-to-ledger-sheet.gs` is
 in active development — takes out the current session *and* every future one. Crash recovery
 becomes the mechanism that makes the crash permanent.
 
@@ -132,7 +132,7 @@ the banner.
 
 ## Tests
 
-Added to the crash-recovery block of `personal/ledger.test.js`. One prerequisite: the `boot()` stub
+Added to the crash-recovery block of `ledger.test.js`. One prerequisite: the `boot()` stub
 needs `getElementById` on its `document`. Without it `showView()` throws inside `restoreUI()`'s
 silent `catch`, which means view restore is currently swallowed rather than exercised — the existing
 lock-survives-a-reload test passes only because the assignments happen before the throw.
@@ -148,15 +148,15 @@ lock-survives-a-reload test passes only because the assignments happen before th
   schemas still migrate.
 
 ```
-node personal/ledger.test.js          # expect > 652 passed, 0 failed
-node personal/build-ledger.js --check # expect "in sync"
+node ledger.test.js          # expect > 652 passed, 0 failed
+node build-ledger.js --check # expect "in sync"
 ```
 
-Behaviour is edited in `personal/ledger.js` and inlined into `personal/ledger.html` by
-`node personal/build-ledger.js`. Editing the source without rebuilding ships stale code to the
+Behaviour is edited in `ledger.js` and inlined into `ledger.html` by
+`node build-ledger.js`. Editing the source without rebuilding ships stale code to the
 browser while the tests pass against fresh source.
 
-By hand, in a browser on `personal/ledger.html`: acknowledge, add a row, reload, confirm the row and
+By hand, in a browser on `ledger.html`: acknowledge, add a row, reload, confirm the row and
 the banner return. Then set `tax-ledger-autosave-v1` in devtools to
 `{"model":{"schema":5,"years":[],"assets":null,"expenses":[],"income":[]},"at":1}` and reload —
 expect a usable page, the quarantine banner, a working download and a working discard.

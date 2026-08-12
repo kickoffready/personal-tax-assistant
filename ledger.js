@@ -37,7 +37,7 @@ const LABEL_HINTS = [
   [/broker|margin loan|share loan/i, "D8"],
   [/bank fee|account keeping|account-keeping/i, "D7"]
 ];
-/* These four encode law, not preference. Each is sourced in personal/RULES.md.
+/* These four encode law, not preference. Each is sourced in RULES.md.
    Changing one without changing that file, and without a test failing, means
    the tool and its documentation have silently diverged. */
 

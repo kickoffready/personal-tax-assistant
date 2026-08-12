@@ -1,6 +1,6 @@
 # D6: one figure here, three boxes on the return
 
-> **Status:** implemented. `poolFields()` in `personal/ledger.js` renders the split; the Lodgment tab shows it.
+> **Status:** implemented. `poolFields()` in `ledger.js` renders the split; the Lodgment tab shows it.
 > **Verified against ato.gov.au on 9 August 2026.** Reverify each tax time.
 
 ## Context

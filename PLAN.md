@@ -1,11 +1,16 @@
 # Static ledger tool for the tax repo
 
-> **Status:** built. `personal/ledger.html` implements this design; its ledger test suite passes.
+> **Status:** built. `ledger.html` implements this design; its ledger test suite passes.
 > **Written:** 6 August 2026
+>
+> *Kept as written. This design was made inside `kickoffready/tax-agents`, a private repo holding
+> notes on an individual return and an SMSF, and the Context below describes that repo rather than
+> this one — the playbook, remediation runbook and SMSF brief it names stayed there when the ledger
+> was split out. What the design argues for is unchanged; only its address is.*
 
 ## Context
 
-The repo currently holds three static documents: a FY2025–26 filing playbook (`personal/index.html`), an abstracted remediation runbook (`personal/runbook.html`), and a bookkeeping system design (`personal/bookkeeping-runbook.html`), plus an SMSF brief (`super/index.html`). All describe a process. None of them *do* anything.
+The repo currently holds three static documents: a FY2025–26 filing playbook (`index.html`), an abstracted remediation runbook (`runbook.html`), and a bookkeeping system design (`bookkeeping-runbook.html`), plus an SMSF brief (`super/index.html`). All describe a process. None of them *do* anything.
 
 The underlying problem is the shape of a long-running `.xlsx` with one wide sheet per financial year: **nothing persists across tabs except by retyping.** The errors that follow are structural rather than careless, and they recur in workbooks of this kind — assets over $300 expensed immediately because nothing carries depreciation forward; capital losses that never reach the lodged return because carry-forward is manual; currency columns mixing a rate and its reciprocal; capital-gains blocks cloned between year-tabs and never refreshed; a marginal-rate multiplier that omits the Medicare levy. Reorganising the same year-tab layout cannot fix any of them.
 
@@ -17,14 +22,14 @@ The correction is to the memory model. "Export so it can resume next year" impli
 
 So: **the exported file is the system of record, and the browser is a calculator over it.** Open → load ledger → work → save ledger. `localStorage` is demoted to crash-recovery autosave, labelled as such in the UI and never authoritative.
 
-Scope decisions: the tool runs **parallel to the spreadsheet for one income year** before taking over; **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file**, and `personal/bookkeeping-runbook.html` remains the process guide.
+Scope decisions: the tool runs **parallel to the spreadsheet for one income year** before taking over; **v1 covers the full ledger**; export is **JSON + CSV** (no zip writer, no library); the tool is a **separate file**, and `bookkeeping-runbook.html` remains the process guide.
 
 ## Architecture
 
-The distributable is a single self-contained `personal/ledger.html`: no runtime dependencies,
+The distributable is a single self-contained `ledger.html`: no runtime dependencies,
 no network, and no build step for its user. It opens from `file://` or can be served from GitHub
-Pages. For maintainability, its behaviour is edited in `personal/ledger.js` and inlined into the
-tracked HTML artifact by the dependency-free `personal/build-ledger.js`; there are still no
+Pages. For maintainability, its behaviour is edited in `ledger.js` and inlined into the
+tracked HTML artifact by the dependency-free `build-ledger.js`; there are still no
 modules, imports, bundler or package dependencies. It remains scoped to the individual return —
 the SMSF is a separate area with its own records and reporting.
 
@@ -33,14 +38,14 @@ the SMSF is a separate area with its own records and reporting.
 ```
 ledger.json  (the record — lives in cloud storage alongside the workbook)
    ↓ load                              ↑ save
-   personal/ledger.html  (stateless calculator)
+   ledger.html  (stateless calculator)
    ↓ export
 ledger-FY2025-26-{assets,expenses,income,lodgment}.csv  (archive)
 ```
 
 ### Data model (`schema: 6`)
 
-Mirrors the schemas already documented in `personal/bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
+Mirrors the schemas already documented in `bookkeeping-runbook.html` §02, so the doc and the tool stay in agreement — that section becomes the normative spec.
 
 | Collection | Persisted | Notes |
 |---|---|---|
@@ -252,12 +257,13 @@ Each stage leaves the file working and testable.
 
 ## Files
 
-- `personal/ledger.html` — the generated standalone tool users open. Nothing publishable lives at the repo root.
-- `personal/ledger.js` — the editable source for the tool's behaviour.
-- `personal/build-ledger.js` — inlines that source into the tracked HTML artifact; `--check` detects drift without writing.
-- `README.md` and root `index.html` — orientation only; the root index is a directory that links out.
+- `ledger.html` — the generated standalone tool users open.
+- `ledger.js` — the editable source for the tool's behaviour.
+- `build-ledger.js` — inlines that source into the tracked HTML artifact; `--check` detects drift without writing.
+- `README.md` — orientation only; what the tool is and the three commands that maintain it.
+- `IMPORT-FORMAT.md` — the contract any converter feeding this ledger must satisfy.
 - `.gitignore` — carries `ledger*.json`, `*.csv` and `evidence/`.
-- `personal/bookkeeping-runbook.html` §02 is the normative schema the tool implements.
+- `bookkeeping-runbook.html` §02 is the normative schema the tool implements.
 
 The tool reuses the design tokens shared across the repo (the `--paper`/`--ink`/`--accent` set and
 the Iowan/system/mono stack) so it reads as part of the same collection.
@@ -270,7 +276,7 @@ the Iowan/system/mono stack) so it reads as part of the same collection.
 4. **Derivation** — hand-edit a `work_pct` in the JSON, reload, and confirm every dependent figure recomputes rather than persisting stale.
 5. **Integrity** — feed each known-bad pattern (over-$300 immediate, mixed FX, duplicated income rows) and confirm the matching warning fires.
 6. **Automation boundary** — confirm nothing invents a Deductible %; blank and out-of-range manual values are rejected; suggestions stay editable; a % set once carries forward across years; changing it without a `basis` note warns; and selecting the fixed rate for a year hides the per-category percentage inputs rather than asking for both.
-7. **Generated artifact** — run `node personal/build-ledger.js --check`; the test suite also compares the embedded script with `personal/ledger.js` and rejects missing, duplicate or unsafe build markers.
+7. **Generated artifact** — run `node build-ledger.js --check`; the test suite also compares the embedded script with `ledger.js` and rejects missing, duplicate or unsafe build markers.
 8. **Lodgment totals** — every label total must equal the sum of its expanded supporting rows, and match a hand-check for at least one label.
 9. **Durability** — open from `file://` in both Safari and Chrome; confirm load, save and CSV download work in both, and that clearing site data loses nothing that isn't already in the saved file.
 10. **Reconciliation** — run the spreadsheet's totals for the parallel year through the panel and account for every difference before the tool takes over.

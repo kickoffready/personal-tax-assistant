@@ -281,7 +281,7 @@
 </div>
 
 <script>
-/* BEGIN GENERATED: personal/ledger.js */
+/* BEGIN GENERATED: ledger.js */
 "use strict";
 
 /* ============================================================
@@ -321,7 +321,7 @@ const LABEL_HINTS = [
   [/broker|margin loan|share loan/i, "D8"],
   [/bank fee|account keeping|account-keeping/i, "D7"]
 ];
-/* These four encode law, not preference. Each is sourced in personal/RULES.md.
+/* These four encode law, not preference. Each is sourced in RULES.md.
    Changing one without changing that file, and without a test failing, means
    the tool and its documentation have silently diverged. */
 
@@ -3351,7 +3351,7 @@ $("#ackGate").addEventListener("keydown", handleAcknowledgementKeydown);
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 initialiseAcknowledgement();
-/* END GENERATED: personal/ledger.js */
+/* END GENERATED: ledger.js */
 </script>
 </body>
 </html>

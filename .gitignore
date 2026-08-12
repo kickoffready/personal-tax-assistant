@@ -1,0 +1,12 @@
+# The ledger file IS the record, and the record is never committed.
+ledger*.json
+evidence/
+
+# Defensive: source data and exports, wherever they land.
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# macOS
+.DS_Store

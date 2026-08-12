@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for the personal ledger           run:  node personal/ledger.test.js
+ * Tests for the personal ledger           run:  node ledger.test.js
  *
  * No dependencies, no framework. The tests run the editable ledger.js source in
  * a vm with just enough DOM stubbed for the engine to work, and also verify that
@@ -8,7 +8,7 @@
  * on any failure.
  *
  * These assertions are the reason to trust the arithmetic. Every rule they check
- * is sourced in personal/RULES.md — when a rate changes, update it there, update
+ * is sourced in RULES.md — when a rate changes, update it there, update
  * the constant, and expect a test here to fail until you update it too.
  */
 

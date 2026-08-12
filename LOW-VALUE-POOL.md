@@ -174,7 +174,7 @@ tests. See the *Treatment suggestion from cost* row in `RULES.md` for the reason
 
 ## Verification
 
-Tests belong in the pool section of `personal/ledger.test.js`, near the existing
+Tests belong in the pool section of `ledger.test.js`, near the existing
 *a pooled asset claims at D6, and says so* block.
 
 - **Disposal arithmetic:** $600 pooled at 100%, sold for $400 the next year — deduction still
@@ -189,9 +189,9 @@ Tests belong in the pool section of `personal/ledger.test.js`, near the existing
 - **Check:** a disposed pooled asset raises the high finding and names the asset, not its ID.
 
 ```
-node personal/build-ledger.js         # ledger.html is generated — never hand-edit
-node personal/ledger.test.js          # expect > 652 passed, 0 failed
-node personal/build-ledger.js --check # expect "in sync"
+node build-ledger.js         # ledger.html is generated — never hand-edit
+node ledger.test.js          # expect > 652 passed, 0 failed
+node build-ledger.js --check # expect "in sync"
 ```
 
 ## Sources
