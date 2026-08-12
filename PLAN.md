@@ -27,7 +27,9 @@ Scope decisions: the tool runs **parallel to the spreadsheet for one income year
 ## Architecture
 
 The distributable is a single self-contained `ledger.html`: no runtime dependencies,
-no network, and no build step for its user. It opens from `file://` or can be served from GitHub
+no network, and no build step for its user. *(Since published: the page carries an analytics tag,
+which measures the visit and never reads the ledger. It is the one thing fetched, and every
+calculation still runs without it — offline included.)* It opens from `file://` or can be served from GitHub
 Pages. For maintainability, its behaviour is edited in `ledger.js` and inlined into the
 tracked HTML artifact by the dependency-free `build-ledger.js`; there are still no
 modules, imports, bundler or package dependencies. It remains scoped to the individual return —

@@ -6,9 +6,13 @@ A ledger for an Australian individual tax return. It keeps the record across inc
 derives what goes on each return label, so the figures you transcribe into myTax come from
 something that carried forward rather than something you retyped.
 
-`ledger.html` is the whole tool — one file, no dependencies, no build step to *use*, no network. It
-contains a single inline `<script>` and fetches nothing. Open it in a browser, load your ledger
-JSON, work, save. Your data never leaves the machine, because there is nowhere for it to go.
+`ledger.html` is the whole tool — one file, no dependencies, no build step to *use*. Open it in a
+browser, load your ledger JSON, work, save. Your data never leaves the machine: there is no
+account, no upload and no server, and nothing here can receive your figures.
+
+The page carries a Google Analytics tag, which measures the visit and nothing else — it never reads
+the ledger. It is the only thing the page fetches, it fails harmlessly offline or from `file://`,
+and every calculation works without it.
 
 ## The problem it exists for
 
