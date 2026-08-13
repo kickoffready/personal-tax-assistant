@@ -1503,6 +1503,92 @@ t('the first year is apportioned by days held, not given a full year',
 t('nothing is claimed after the asset is written off',
   !D.dep.some(r => r.year > '2028-29'), D.dep.map(r=>r.year).join(','), 'stops at 2028-29');
 
+/* The Lodgment tab reports D3, D5, D6 — paper-return item numbers that never appear in myTax,
+   whose fields stay hidden until a box on the Personalise screen is ticked. A correct figure
+   with nowhere to type it is the same as no figure. These assertions are that mapping: get one
+   wrong and you are sent to a section that is not there, or a figure is stranded on the tab. */
+console.log('\\n— the Personalise screen is derived from the ledger, not guessed at');
+const pers = fy => personaliseChecklist(D.lodgment[fy], D.cgt[fy]);
+const ticked = p => p.required.reduce((a,g) => a.concat(g.items.map(i => i.item || g.group)), []);
+const unlocksFor = (p, re) => {
+  for (const g of p.required) for (const i of g.items)
+    if (re.test(i.item || g.group)) return i.unlocks;
+  return null;
+};
+const pAll = PERSONALISE.reduce((n,g) => n + g.items.length, 0);
+
+setModel({years:[{year:'2025-26'}],
+  expenses:[{id:'p1',date:'2025-09-01',supplier:'union fees',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26'; D=derive();
+let pk = pers('2025-26'), pt = ticked(pk);
+t('a work expense ticks work-related expenses', pt.some(s=>/Work-related expenses/.test(s)),
+  pt.join(' | '), 'work-related expenses');
+t('and the salary box myTax gates it behind', pt.some(s=>/Salary, wages/.test(s)),
+  pt.join(' | '), 'salary and wages');
+t('and no other box', pt.length===2, pt.join(' | '), 'two boxes');
+t('the box names the label it reveals', unlocksFor(pk,/Work-related expenses/).join(',')==='D5',
+  unlocksFor(pk,/Work-related expenses/).join(','), 'D5');
+
+// The case the repo already documents in prose: D6 is invisible until Other deductions is ticked.
+setModel({years:[{year:'2025-26'}],assets:[{asset_id:'A-P',item_supplier:'dock — Officeworks',
+  purchase_date:'2025-09-01',cost:310.32,treatment:'pool',work_pct:{'2025-26':100}}]});
+activeYear='2025-26'; D=derive(); pk = pers('2025-26');
+t('a pooled asset sends you to Other deductions, where D6 lives',
+  (unlocksFor(pk,/Other deductions/)||[]).includes('D6'),
+  (unlocksFor(pk,/Other deductions/)||[]).join(','), 'D6');
+
+// myTax's fund box is worded "including where distribution has capital gains and foreign income".
+// Ticking the foreign or CGT box as well opens a second screen for figures already typed once.
+setModel({years:[{year:'2025-26'}],income:[{id:'pf1',type:'distribution',date:'2025-09-01',
+  holding:'VGS',unfranked:100,foreign_aud:50,tax_withheld_aud:5,cg_discount:200}]});
+activeYear='2025-26'; D=derive(); pk = pers('2025-26'); pt = ticked(pk);
+t('a distribution ticks the managed fund box',
+  pt.some(s=>/managed fund or trust distributions/.test(s)), pt.join(' | '), 'managed fund');
+t('foreign income inside it does not also tick Other foreign income',
+  !pt.some(s=>/Other foreign income/.test(s)), pt.join(' | '), 'no foreign box');
+t('and a capital gain inside it does not tick the capital gains box',
+  !pt.some(s=>/Capital gains or losses/.test(s)), pt.join(' | '), 'no capital gains box');
+t('the fund box names the codes its block actually asks for',
+  unlocksFor(pk,/managed fund/).includes('20E') && unlocksFor(pk,/managed fund/).includes('18A'),
+  unlocksFor(pk,/managed fund/).join(','), 'includes 20E and 18A');
+
+// Held directly, the same income is the other box entirely.
+setModel({years:[{year:'2025-26'}],income:[{id:'pg1',type:'foreign',date:'2025-09-01',
+  holding:'MSFT',gross_foreign:100,fx_rate:0.65}]});
+activeYear='2025-26'; D=derive(); pt = ticked(pers('2025-26'));
+t('foreign income held directly does tick Other foreign income',
+  pt.some(s=>/Other foreign income/.test(s)), pt.join(' | '), 'other foreign income');
+
+// The box that reports nothing. Without it a carried loss never reaches the return at all,
+// which is one of the spreadsheet failures this ledger exists to stop.
+setModel({years:[{year:'2025-26',cf_capital_loss:4000}]});
+activeYear='2025-26'; D=derive(); pk = pers('2025-26'); pt = ticked(pk);
+t('a carried loss with no CGT event ticks the unapplied-losses box',
+  pt.some(s=>/Unapplied net capital losses/.test(s)), pt.join(' | '), 'unapplied losses');
+t('and promises no label figure, because it produces none',
+  unlocksFor(pk,/Unapplied net capital losses/).length===0,
+  unlocksFor(pk,/Unapplied net capital losses/).join(','), 'nothing');
+
+setModel({years:[{year:'2025-26',cf_capital_loss:4000}],income:[{id:'ps1',type:'disposal',
+  date:'2026-01-10',acquired:'2020-01-01',holding:'CBA',proceeds:9000,cost_base:2000}]});
+activeYear='2025-26'; D=derive(); pt = ticked(pers('2025-26'));
+t('the same loss with a disposal ticks capital gains instead',
+  pt.some(s=>/Capital gains or losses/.test(s)) && !pt.some(s=>/Unapplied net capital losses/.test(s)),
+  pt.join(' | '), 'capital gains, not unapplied losses');
+
+// Folded, not dropped: a box you were told to leave alone differs from one nobody considered.
+setModel({years:[{year:'2025-26'}]});
+activeYear='2025-26'; D=derive(); pk = pers('2025-26');
+t('an empty year requires no box at all', pk.required.length===0, pk.required.length, 0);
+t('and every box is still accounted for as considered',
+  pk.notNeeded.length===pAll, pk.notNeeded.length, pAll);
+
+setModel({years:[{year:'2025-26'}],
+  expenses:[{id:'p2',date:'2025-09-01',supplier:'union fees',amount:600,work_pct:100,label:'D5'}]});
+activeYear='2025-26'; D=derive(); pk = pers('2025-26');
+t('no box is ever both required and not needed, or neither',
+  ticked(pk).length + pk.notNeeded.length === pAll,
+  ticked(pk).length + ' + ' + pk.notNeeded.length, pAll);
 
 `;
 vm.runInContext(code + "\n;\n" + ENGINE_TESTS, boot());
@@ -2622,6 +2708,28 @@ vm.runInContext(TWO_YEARS + `activeYear='${RY}'; render();`, dateDom);
   t(`the ${id} box opens in the year being lodged`, fyOf_(got)===RY, got, 'a date in '+RY);
 });
 function fyOf_(s){ return vm.runInContext(`fyOf(${JSON.stringify(s||'')})`, dateBoot); }
+
+// The label rows are answers to a screen you have not reached yet. D5 is correct and unfindable
+// until "Work-related expenses" is ticked at Personalise return, so that screen renders first,
+// above the detail — otherwise the tab hands you an item number and no way to spend it.
+console.log('\n— the Lodgment tab opens on the screen that comes first in myTax');
+const persDom = (() => { const c = boot({}, false, true); vm.runInContext(code, c); return c; })();
+vm.runInContext(`M.years=[{year:'${RY}'}];
+  M.expenses=[{id:'x1',date:'${sep(RY)}',supplier:'union fees',amount:600,work_pct:100,label:'D5'}];
+  activeYear='${RY}'; render();`, persDom);
+const pl = persDom.DOM['#v-lodgment'].innerHTML;
+t('the Personalise screen is named on the tab', /Personalise your .+ return/.test(pl), '', 'named');
+t('and it sits above the label detail',
+  pl.indexOf('Personalise your') < pl.indexOf('<h3>Deductions</h3>'),
+  pl.indexOf('Personalise your') + ' vs ' + pl.indexOf('<h3>Deductions</h3>'), 'before it');
+t('it names the box to tick, not the item number alone',
+  /Work-related expenses/.test(pl), '', 'the checkbox wording');
+t('and the label that ticking it reveals', /<span class="pill">D5<\/span>/.test(pl), '', 'a D5 pill');
+t('the salary box says why it is there and not to type it',
+  /arrives by pre-fill/.test(pl), '', 'the pre-fill note');
+t('boxes considered and not needed are folded, not dropped',
+  /Considered and not needed this year/.test(pl) && /rent from Australian properties/.test(pl),
+  '', 'the folded line');
 
 // The Lodgment tab is transcription, so a label that maps to three myTax boxes has to show
 // three — and show them without being expanded first, since a collapsed row is a figure you

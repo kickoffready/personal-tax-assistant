@@ -16,6 +16,106 @@ const INCOME_LABELS = {
   I10:"Gross interest", I11:"Dividends", I13:"Partnerships and trusts",
   I18:"Capital gains", I20:"Foreign source income", I24:"Other income"
 };
+// The labels D1-D5 are the ones myTax gates behind "You must have salary or wages income".
+const WORK_RELATED = ["D1","D2","D3","D4","D5"];
+const GIFTS_AND_AFFAIRS = ["D7","D8","D9","D10"];
+const OTHER_DEDUCTIONS = ["D6","D15"];
+
+/* myTax's "Personalise your return" screen, in the order it appears there.
+   A label figure on its own is not enough to lodge with. Nothing on the return can be
+   entered until the matching box is ticked here, and the D-codes never appear on screen —
+   so a correct D5 total is still unfindable if "Work-related expenses" was never ticked.
+   This table is what turns each derived label back into the box that reveals it.
+
+   Each group is one bold checkbox. `items` are its sub-checkboxes; a group whose single
+   item has no `item` string IS the checkbox, with nothing under it. `when` decides from the
+   ledger and a missing `when` means the box is one this ledger can never require. `unlocks`
+   names the labels the tick makes reachable, and `short` is how the box is named in the
+   folded line listing what was considered and not needed.
+
+   Two of these are wrong in the obvious reading and right here:
+     · Fund-sourced foreign income and fund-sourced capital gains tick the managed fund box
+       and nothing else — myTax's wording carries them ("including where distribution has
+       capital gains and foreign income", "not from a managed fund or trust distribution").
+     · A capital loss carried in from an earlier year with no CGT event this year has its own
+       box and produces no label figure at all, so nothing else on this tab would mention it.
+   ato.gov.au > myTax > Personalise your return. Wording verified in PERSONALISE.md. */
+const PERSONALISE = [
+  { group:"You received salary, wages or other income on an income statement/payment summary, "
+        + "Australian Government payments, or First home super saver (FHSS) scheme payment",
+    items:[
+      { item:"Salary, wages, allowances, tips, bonuses etc. (including lump sum A, B, D or E payments)",
+        short:"salary and wages",
+        when: x => x.ded(WORK_RELATED).length > 0,
+        unlocks: x => x.ded(WORK_RELATED),
+        note:"myTax will not let you tick work-related expenses without this one. The figure "
+           + "itself arrives by pre-fill — tick the box, do not type it from here." },
+      { short:"Australian Government payments" },
+      { short:"employment termination payments" },
+      { short:"foreign employment income on a payment summary" },
+      { short:"attributed personal services income" },
+      { short:"first home super saver" }
+    ]},
+  { group:"You had income from Australian superannuation or annuity funds",
+    items:[ { short:"superannuation or annuity income" } ]},
+  { group:"You had Australian interest, or other Australian income or losses from investments or property",
+    items:[
+      { item:"Interest",  short:"interest",
+        when: x => x.inc("I10"), unlocks: () => ["10"] },
+      { item:"Dividends", short:"dividends",
+        when: x => x.inc("I11"), unlocks: () => ["11"] },
+      { short:"rent from Australian properties" },
+      { item:"Capital gains or losses that are not from a managed fund or trust distribution",
+        short:"capital gains outside a distribution",
+        when: x => x.inc("I18"), unlocks: () => ["18"] },
+      { item:"Unapplied net capital losses from earlier years to carry forward but no CGT event this year",
+        short:"carried-forward capital losses",
+        when: x => x.lossOnly(),
+        unlocks: () => [],
+        note:"No label figure and no gain to report — but without this box the loss never "
+           + "reaches the return, and a carry-forward you do not lodge is one you lose." }
+    ]},
+  { group:"You had managed fund or trust distributions (including where distribution has capital gains and foreign income)",
+    items:[
+      { short:"managed fund or trust distributions",
+        when: x => x.funds().length > 0 || x.inc("I13"),
+        unlocks: x => x.funds().length ? x.fundCodes() : ["13"],
+        note:"Capital gains and foreign income inside a distribution are entered here too. "
+           + "They do not also need their own boxes." }
+    ]},
+  { group:"You were a sole trader or had business income or losses or partnership distributions",
+    items:[ { short:"business or partnership income" } ]},
+  { group:"You had foreign income",
+    items:[
+      { short:"foreign pensions or annuities" },
+      { short:"foreign employment income not on a payment summary" },
+      { item:"Other foreign income", short:"other foreign income",
+        when: x => x.inc("I20"), unlocks: () => ["20"],
+        note:"Held directly. Foreign income that came through a fund belongs in the fund's "
+           + "block instead, and is already covered by the distributions box above." },
+      { short:"foreign entities" }
+    ]},
+  { group:"You had other income not listed above (including employee share schemes)",
+    items:[ { short:"other income", when: x => x.inc("I24"), unlocks: () => ["24"] } ]},
+  { group:"You had deductions you want to claim",
+    items:[
+      { item:"Work-related expenses — You must have salary or wages income",
+        short:"work-related expenses",
+        when: x => x.ded(WORK_RELATED).length > 0,
+        unlocks: x => x.ded(WORK_RELATED),
+        note:"Working from home is claimed inside this section, not as a section of its own." },
+      { item:"Gifts, donations, interest, dividends, and the cost of managing your tax affairs",
+        short:"gifts, donations and the cost of managing tax affairs",
+        when: x => x.ded(GIFTS_AND_AFFAIRS).length > 0,
+        unlocks: x => x.ded(GIFTS_AND_AFFAIRS) },
+      { item:"Personal superannuation contributions", short:"personal super contributions",
+        when: x => x.ded(["D12"]).length > 0, unlocks: x => x.ded(["D12"]) },
+      { item:"Other deductions", short:"other deductions",
+        when: x => x.ded(OTHER_DEDUCTIONS).length > 0,
+        unlocks: x => x.ded(OTHER_DEDUCTIONS),
+        note:"Where the low-value pool lives. Until this is ticked D6 does not appear anywhere." }
+    ]}
+];
 // Commissioner's effective lives, in years. Self-assessing a shorter life is
 // permitted but must be justifiable. ato.gov.au > effective life of an asset
 const EFFECTIVE_LIVES = [
@@ -1023,6 +1123,43 @@ function fundDistributions(fy){
     .map(fundRow);
 }
 
+// Which boxes on the Personalise screen this year's figures require, and which were considered
+// and are not needed. Kept apart from the rendering so the mapping can be asserted directly:
+// it encodes what myTax reveals, and getting it wrong sends you to a screen that is not there.
+// Returns { required:[{ group, items:[{ item, unlocks, note }] }], notNeeded:[short…] } in
+// myTax's own screen order. Every entry in the table lands in exactly one of the two.
+function personaliseChecklist(L, cgt){
+  const funds = L.funds || [];
+  const x = {
+    ded: ks => ks.filter(k => L.deductions[k]),
+    inc: k => !!L.income[k],
+    funds: () => funds,
+    // The codes a fund block actually asks you to type. Nil components are left blank, so
+    // naming them here would promise fields the block itself folds away.
+    fundCodes: () => funds.reduce((acc, f) => {
+      for (const [code,, amt] of f.fields)
+        if (code && Math.abs(num(amt)) > 0.005 && !acc.includes(code)) acc.push(code);
+      return acc;
+    }, []),
+    // A loss brought forward with nothing to apply it against. With any CGT event this year
+    // the loss is reported through label 18 instead, and this box is the wrong one to tick.
+    lossOnly: () => !!cgt && num(cgt.unusedLoss) > 0.005
+      && num(cgt.discountable) <= 0.005 && num(cgt.other) <= 0.005 && num(cgt.losses) <= 0.005
+  };
+  const required = [], notNeeded = [];
+  for (const g of PERSONALISE){
+    const items = [];
+    for (const it of g.items){
+      if (it.when && it.when(x))
+        items.push({ item: it.item || "", note: it.note || "",
+                     unlocks: it.unlocks ? it.unlocks(x) : [] });
+      else notNeeded.push(it.short);
+    }
+    if (items.length) required.push({ group: g.group, items });
+  }
+  return { required, notNeeded };
+}
+
 // Whether a distribution has been broken out from its AMMA statement. The single-figure form
 // stays valid — files written before this existed still lodge the same numbers — so the two
 // forms have to be told apart in one named place rather than at each site that reads them.
@@ -1669,6 +1806,43 @@ function poolFields(total){
     ["Remaining low value pool deduction", total]
   ];
 }
+// The label rows below this block are the answers. This is the screen that has to be filled in
+// before any of them can be typed, so it goes first — reading D5 and then finding no such field
+// in myTax is the failure it exists to prevent. Folded rather than dropped, like the nil fund
+// fields: a box you were told to leave alone is different from one nobody considered.
+function renderPersonalise(L){
+  const { required, notNeeded } = personaliseChecklist(L, derived.cgt[activeYear]);
+  if (!required.length) return "";
+  // A fund block can reveal six codes and a full set of work expenses five. The nowrap that suits
+  // a money figure would drive those off the row, so these wrap and stay right-aligned instead —
+  // the same override .lodge-body li.nil already makes for the folded line.
+  const pills = u => u.length
+    ? `<span style="white-space:normal;text-align:right">${
+        u.map(c => `<span class="pill">${esc(c)}</span>`).join(" ")}</span>`
+    : "<span></span>";
+  const note  = n => n ? `<br><span style="color:var(--faint);font-size:12px">${esc(n)}</span>` : "";
+  return `<h3>Personalise your ${fyLabel(activeYear)} return</h3>
+    <p class="sub">myTax ▸ Personalise return, the screen before Prepare return. The item numbers
+    below never appear there, and the fields they name stay hidden until the box that reveals them
+    is ticked — a figure with nowhere to type it is the same as no figure. Tick these.</p>
+    ${required.map(g => {
+      const bare = g.items.length === 1 && !g.items[0].item;
+      return `<div class="lodge-row open">
+        <div class="lodge-head">
+          <span class="lodge-lbl">✓</span>
+          <span class="lodge-name">${esc(g.group)}${bare ? note(g.items[0].note) : ""}</span>
+          ${bare ? pills(g.items[0].unlocks) : ""}
+        </div>
+        ${bare ? "" : `<div class="lodge-body"><ul>${g.items.map(it =>
+          `<li><span>${esc(it.item)}${note(it.note)}</span>
+             ${pills(it.unlocks)}</li>`).join("")}</ul></div>`}
+      </div>`;
+    }).join("")}
+    <div class="note aside"><b>Considered and not needed this year</b>
+      ${esc(notNeeded.join(", "))}. Leave these unticked — each one opens a section of the return
+      that this ledger has nothing to put in.</div>`;
+}
+
 function renderLodgment(){
   const L = derived.lodgment[activeYear] || { deductions:{}, income:{} };
   const y = M.years.find(x => x.year === activeYear) || {};
@@ -1700,6 +1874,8 @@ function renderLodgment(){
   $("#v-lodgment").innerHTML = `
     <h2>Lodgment — FY ${fyLabel(activeYear)}</h2>
     <p class="sub">One line per return label. The figure on the right is what you type into myTax; expand a row to see what makes it up.</p>
+
+    ${renderPersonalise(L)}
 
     <h3>Deductions</h3>
     ${dedKeys.length ? dedKeys.map(k => rowHTML(k, DEDUCTION_LABELS[k], L.deductions[k])).join("")

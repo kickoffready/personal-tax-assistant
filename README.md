@@ -47,6 +47,10 @@ from home at the fixed rate · franking credits and the foreign income tax offse
 return from companies *and* trusts · managed fund distributions broken out fund by fund the way
 myTax asks for them · integrity checks that name what looks wrong and let you proceed anyway.
 
+The Lodgment view opens on the **Personalise** checklist, because a return label is unusable until
+the box that reveals it is ticked — the D-codes never appear in myTax, and the fields they name do
+not exist on screen until you have been through that first. `PERSONALISE.md` is the mapping.
+
 Every rate and rule it encodes is listed in **`RULES.md`** with its ato.gov.au source. When a rate
 changes, that file changes with the constant, and a test fails until both move together.
 
@@ -55,7 +59,7 @@ changes, that file changes with the constant, and a test fails until both move t
 ```
 node build-ledger.js               # regenerate ledger.html from ledger.js
 node build-ledger.js --check       # verify the artifact is current; writes nothing
-node ledger.test.js                # 653 passed, 0 failed
+node ledger.test.js                # 675 passed, 0 failed
 node gmail-to-ledger.test.js       #  74 passed, 0 failed
 node gmail-to-ledger-sheet.test.js #  95 passed, 0 failed
 ```
@@ -104,6 +108,7 @@ already reaches across is a boundary in the wrong place.
 | `LOW-VALUE-POOL.md` | The pool rules, and where the ledger departed from them. |
 | `CRASH-RECOVERY.md` | What the autosave is, and what it is not. |
 | `D6-LODGMENT.md` | How D6 transcribes into the three boxes myTax requires. |
+| `PERSONALISE.md` | Which myTax checkbox reveals each label, and the three that are wrong in the obvious reading. |
 
 ## Warning
 
